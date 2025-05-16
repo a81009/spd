@@ -1,5 +1,6 @@
 version: '3.8'
 
+# ---------- VARIÁVEIS COMUNS ----------
 x-common-env: &common-env
   - REDIS_HOST=redis
   - REDIS_PORT=6379
@@ -11,7 +12,7 @@ x-common-env: &common-env
 services:
   # ---------- DATA LAYER ----------
   cockroach1:
-    image: cockroachdb/cockroach:v23.2.4   # ← downgrade
+    image: cockroachdb/cockroach:v23.2.4
     command: >
       start-single-node
       --insecure
@@ -26,17 +27,21 @@ services:
     restart: unless-stopped
 
   cockroach-init:
-    image: cockroachdb/cockroach:v23.2.4   # ← mesma versão
+    image: cockroachdb/cockroach:v23.2.4
     depends_on:
       - cockroach1
     entrypoint: >
       sh -c "
-        echo '⏳ à espera do Cockroach…' &&
-        until cockroach sql --host=cockroach1 --insecure -e 'SELECT 1' >/dev/null 2>&1
-        do sleep 1; done &&
-        echo '✅ criando BD kvdb (se não existir)…' &&
-        cockroach sql --host=cockroach1 --insecure -e 'CREATE DATABASE IF NOT EXISTS kvdb;' &&
-        echo '🏁 pronto.' "
+        echo '⏳ À espera do Cockroach…';
+        until cockroach sql --host=cockroach1 --insecure -e 'SELECT 1' >/dev/null 2>&1; do
+          sleep 1;
+        done;
+        echo '✅ Criando BD kvdb…';
+        cockroach sql --host=cockroach1 --insecure -e \"CREATE DATABASE IF NOT EXISTS kvdb;\";
+        echo '✅ Criando tabela kv_store…';
+        cockroach sql --host=cockroach1 --insecure -e \"CREATE TABLE IF NOT EXISTS kvdb.kv_store ( key STRING PRIMARY KEY, value STRING );\";
+        echo '🏁 pronto.'
+      "
     restart: "no"
 
   redis:
@@ -53,6 +58,10 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      retries: 5
     restart: unless-stopped
 
   # ---------- APPLICATION LAYER ----------
@@ -64,9 +73,14 @@ services:
     expose: ["8000"]
 
   consumer:
-    build:
-      context: ./consumer
-    depends_on: [cockroach-init, redis, rabbitmq]
+    build: ./consumer
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      cockroach-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
     environment: *common-env
     restart: unless-stopped
 

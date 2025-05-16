@@ -18,7 +18,7 @@ async def main() -> None:
             """
             CREATE TABLE IF NOT EXISTS kv_store (
                 key   STRING PRIMARY KEY,
-                value BYTES
+                value STRING
             );
             """
         )

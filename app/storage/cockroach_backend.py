@@ -17,7 +17,7 @@ class CockroachBackend(KVBackend):
                 await conn.execute(
                     """CREATE TABLE IF NOT EXISTS kv_store (
                            key STRING PRIMARY KEY,
-                           value BYTES
+                           value STRING
                        );"""
                 )
         return self._pool
