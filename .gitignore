@@ -1,0 +1,13 @@
+# Logs
+*.log
+
+# Pastas de dependências
+node_modules/
+
+# Caches / builds
+dist/
+__pycache__/
+
+# Ficheiros de sistema
+.DS_Store
+.env

@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  cockroach1:
+    image: cockroachdb/cockroach:v24.1.0
+    command: start-single-node --insecure
+    hostname: cockroach1
+    volumes:
+      - cockroach-data:/cockroach/cockroach-data
+    ports:
+      - "26257:26257"   # SQL
+      - "8080:8080"     # UI
+
+  api:
+    build: .
+    depends_on:
+      - cockroach1
+    environment:
+      - STORAGE_BACKEND=cockroach
+      - COCKROACH_DSN=postgresql://root@cockroach1:26257/kvdb?sslmode=disable
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  cockroach-data:
