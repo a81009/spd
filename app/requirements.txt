@@ -1,5 +1,7 @@
 fastapi==0.110.3
 uvicorn[standard]==0.29.0
-aiosqlite==0.20.0          # SQLite
-asyncpg==0.29.0            # Cockroach/Postgres
-python-dotenv==1.0.1       # opcional p/ configs locais
+aiosqlite==0.20.0
+asyncpg==0.29.0
+redis[asyncio]==5.0.4     # ← novo
+aio-pika==9.4.0           # ← novo
+python-dotenv==1.0.1

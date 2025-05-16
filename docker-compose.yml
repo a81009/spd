@@ -1,25 +1,82 @@
-version: "3.8"
+version: '3.8'
+
+x-common-env: &common-env
+  - REDIS_HOST=redis
+  - REDIS_PORT=6379
+  - MQ_HOST=rabbitmq
+  - MQ_PORT=5672
+  - STORAGE_BACKEND=cockroach
+  - COCKROACH_DSN=postgresql://root@cockroach1:26257/kvdb?sslmode=disable
 
 services:
+  # ---------- DATA LAYER ----------
   cockroach1:
-    image: cockroachdb/cockroach:v24.1.0
-    command: start-single-node --insecure
+    image: cockroachdb/cockroach:v23.2.4   # ← downgrade
+    command: >
+      start-single-node
+      --insecure
+      --listen-addr=:26257
+      --http-addr=:8080
     hostname: cockroach1
     volumes:
       - cockroach-data:/cockroach/cockroach-data
     ports:
-      - "26257:26257"   # SQL
-      - "8080:8080"     # UI
+      - "26257:26257"
+      - "8080:8080"
+    restart: unless-stopped
 
-  api:
-    build: .
+  cockroach-init:
+    image: cockroachdb/cockroach:v23.2.4   # ← mesma versão
     depends_on:
       - cockroach1
+    entrypoint: >
+      sh -c "
+        echo '⏳ à espera do Cockroach…' &&
+        until cockroach sql --host=cockroach1 --insecure -e 'SELECT 1' >/dev/null 2>&1
+        do sleep 1; done &&
+        echo '✅ criando BD kvdb (se não existir)…' &&
+        cockroach sql --host=cockroach1 --insecure -e 'CREATE DATABASE IF NOT EXISTS kvdb;' &&
+        echo '🏁 pronto.' "
+    restart: "no"
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    hostname: rabbitmq
     environment:
-      - STORAGE_BACKEND=cockroach
-      - COCKROACH_DSN=postgresql://root@cockroach1:26257/kvdb?sslmode=disable
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
     ports:
-      - "8000:8000"
+      - "5672:5672"
+      - "15672:15672"
+    restart: unless-stopped
+
+  # ---------- APPLICATION LAYER ----------
+  api:
+    build: .
+    depends_on: [cockroach-init, redis, rabbitmq]
+    environment: *common-env
+    restart: unless-stopped
+    expose: ["8000"]
+
+  consumer:
+    build:
+      context: ./consumer
+    depends_on: [cockroach-init, redis, rabbitmq]
+    environment: *common-env
+    restart: unless-stopped
+
+  # ---------- EDGE ----------
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports: ["80:80"]
+    depends_on: [api]
     restart: unless-stopped
 
 volumes:
