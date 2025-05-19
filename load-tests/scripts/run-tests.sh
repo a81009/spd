@@ -1,19 +1,17 @@
 #!/bin/bash
 set -e
 
-# Diretórios (usando caminhos relativos)
+# Diretórios
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_PLAN_DIR="${SCRIPT_DIR}/jmeter/test-plans"
 RESULTS_DIR="${SCRIPT_DIR}/jmeter/results"
 JMETER_LOG_DIR="${SCRIPT_DIR}/jmeter/logs"
 
-# Verificar se o JMeter está instalado
+# Encontrar JMeter
 check_jmeter() {
-    # Encontrar o caminho completo para o JMeter
     JMETER_CMD=$(which jmeter 2>/dev/null || echo "")
     
     if [ -z "$JMETER_CMD" ]; then
-        # Tentar locais comuns de instalação
         for path in "/usr/bin/jmeter" "/usr/local/bin/jmeter" "/opt/jmeter/bin/jmeter" "$HOME/jmeter/bin/jmeter"; do
             if [ -x "$path" ]; then
                 JMETER_CMD="$path"
@@ -22,7 +20,6 @@ check_jmeter() {
         done
     fi
     
-    # Se ainda não encontrou, não está instalado
     if [ -z "$JMETER_CMD" ]; then
         echo "Apache JMeter não está instalado. Por favor, instale o JMeter primeiro."
         echo "Você pode instalar via:"
@@ -32,23 +29,25 @@ check_jmeter() {
         exit 1
     fi
     
-    # Verificar a versão do JMeter usando o caminho completo
     JMETER_VERSION=$("$JMETER_CMD" --version 2>/dev/null | head -n 1 || "$JMETER_CMD" -v 2>/dev/null | head -n 1)
-    echo "JMeter encontrado: $JMETER_CMD"
-    echo "Versão do JMeter: $JMETER_VERSION"
     
-    # Exportar o caminho para uso posterior
+    if [[ "$JMETER_VERSION" =~ 5\.|6\. ]]; then
+        IS_JMETER_5_PLUS=true
+    else
+        IS_JMETER_5_PLUS=false
+    fi
+    
     export JMETER_CMD
-    return 0
+    export IS_JMETER_5_PLUS
 }
 
-# Criar diretórios necessários e garantir permissões
+# Criar diretórios necessários
 mkdir -p "$TEST_PLAN_DIR"
 mkdir -p "$RESULTS_DIR"
 mkdir -p "$JMETER_LOG_DIR"
 chmod -R 777 "${SCRIPT_DIR}/jmeter"
 
-# Função para ler input do usuário com valor padrão
+# Leitura com valores padrão
 read_input() {
     local prompt=$1
     local default=$2
@@ -61,24 +60,13 @@ read_input() {
 # Verificar JMeter
 check_jmeter
 
-# Detectar se estamos usando JMeter 5.x ou mais recente
-IS_JMETER_5_PLUS=false
-if [[ "$JMETER_VERSION" =~ 5\.|6\. ]]; then
-    IS_JMETER_5_PLUS=true
-    echo "Detectado JMeter versão 5+ ($JMETER_VERSION)"
-else
-    echo "Detectado JMeter versão anterior a 5 ($JMETER_VERSION)"
-fi
-
-echo "Diretório de trabalho: $SCRIPT_DIR"
-
-# Leitura interativa dos parâmetros
+# Leitura interativa dos parâmetros (com localhost:8000 por padrão)
 echo "===================================="
 echo "Configuração do Teste de Carga"
 echo "===================================="
 
-HOST=$(read_input "Host" "localhost")
-PORT=$(read_input "Porta" "80")
+HOST="localhost"
+PORT="8000"
 USERS=$(read_input "Número de usuários concorrentes" "10")
 RAMPUP=$(read_input "Tempo de ramp-up (segundos)" "5")
 DURATION=$(read_input "Duração do teste (segundos)" "60")
@@ -115,7 +103,7 @@ if [[ ! $confirm =~ ^[Ss]$ ]]; then
     exit 0
 fi
 
-# Criar um arquivo JMX compatível com JMeter 5.6
+# Criar arquivo JMX
 TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test-${TIMESTAMP}.jmx"
 
 if [ "$IS_JMETER_5_PLUS" = true ]; then
@@ -152,7 +140,7 @@ if [ "$IS_JMETER_5_PLUS" = true ]; then
             <collectionProp name="Arguments.arguments"/>
           </elementProp>
           <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port,8000)}</stringProp>
           <stringProp name="HTTPSampler.protocol">http</stringProp>
           <stringProp name="HTTPSampler.path">/kv/1</stringProp>
           <stringProp name="HTTPSampler.method">GET</stringProp>
@@ -168,7 +156,6 @@ if [ "$IS_JMETER_5_PLUS" = true ]; then
 </jmeterTestPlan>
 EOL
 else
-    # Versão para JMeter mais antigo
     cat > "$TEST_PLAN_FILE" << 'EOL'
 <?xml version="1.0" encoding="UTF-8"?>
 <jmeterTestPlan version="1.2" properties="2.1">
@@ -203,7 +190,7 @@ else
             <collectionProp name="Arguments.arguments"/>
           </elementProp>
           <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port,8000)}</stringProp>
           <stringProp name="HTTPSampler.protocol">http</stringProp>
           <stringProp name="HTTPSampler.path">/kv/1</stringProp>
           <stringProp name="HTTPSampler.method">GET</stringProp>
@@ -224,16 +211,13 @@ echo "===================================="
 echo "Executando teste de carga..."
 echo "===================================="
 
-# Configurar JMeter para usar o diretório de log
+# Configurar JMeter
 export JVM_ARGS="-Djava.io.tmpdir=$JMETER_LOG_DIR -Djava.awt.headless=true"
-
-# Criar arquivos com permissões
 touch "$RESULTS_CSV"
 chmod 777 "$RESULTS_CSV"
 
-# Usar comando para JMeter 5+
+# Executar JMeter
 if [ "$IS_JMETER_5_PLUS" = true ]; then
-    echo "Usando comando JMeter 5+"
     "$JMETER_CMD" --nongui \
            --testfile "$TEST_PLAN_FILE" \
            --logfile "$LOG_FILE" \
@@ -246,59 +230,36 @@ if [ "$IS_JMETER_5_PLUS" = true ]; then
            --reportatendofloadtests \
            --reportoutputfolder "${RESULTS_DIR}/report-${TIMESTAMP}" \
            -l "$RESULTS_CSV"
-    JMETER_EXIT_CODE=$?
 else
-    echo "Usando comando JMeter para versões antigas"
     "$JMETER_CMD" -n -t "$TEST_PLAN_FILE" \
            -Jhost="$HOST" \
            -Jport="$PORT" \
            -Jusers="$USERS" \
            -Jrampup="$RAMPUP" \
            -l "$RESULTS_CSV" > "$LOG_FILE" 2>&1
-    JMETER_EXIT_CODE=$?
 fi
 
-# Verificar se o teste foi executado com sucesso
-if [ $JMETER_EXIT_CODE -eq 0 ]; then
+# Verificar resultado
+if [ $? -eq 0 ]; then
     echo "===================================="
     echo "Teste concluído com sucesso!"
     echo "===================================="
 else
     echo "===================================="
-    echo "ERRO: Teste falhou com código $JMETER_EXIT_CODE"
-    echo "Verifique o log para mais detalhes: $LOG_FILE"
+    echo "ERRO: Teste falhou"
+    echo "Verifique o log: $LOG_FILE"
     echo "===================================="
+    exit 1
 fi
 
-# Verificar se o arquivo de resultados foi criado
+# Verificar resultados
 if [ -f "$RESULTS_CSV" ] && [ -s "$RESULTS_CSV" ]; then
-    echo "Arquivo de resultados criado: $RESULTS_CSV"
-    
-    # Exibir estatísticas básicas
-    echo "Estatísticas básicas:"
-    echo "Tamanho do arquivo: $(du -h "$RESULTS_CSV" | cut -f1)"
-    echo "Primeiras linhas:"
-    head -n 2 "$RESULTS_CSV" 2>/dev/null || echo "Arquivo vazio ou não é um arquivo de texto"
+    echo "Arquivo de resultados: $RESULTS_CSV"
+    echo "Relatório HTML: ${RESULTS_DIR}/report-${TIMESTAMP}"
 else
-    echo "AVISO: Arquivo de resultados não foi criado ou está vazio: $RESULTS_CSV"
-    
-    # Listar todos os arquivos gerados
-    echo "Listando arquivos em $RESULTS_DIR:"
-    ls -la "$RESULTS_DIR"
-    
-    echo "Listando arquivos no diretório atual:"
-    ls -la .
-    
-    # Verificar onde foram salvos os resultados (talvez em outro diretório)
-    echo "Procurando arquivos .jtl ou .csv recentes:"
-    find "$SCRIPT_DIR" -name "*.jtl" -o -name "*.csv" -mtime -1 2>/dev/null || echo "Nenhum arquivo .jtl ou .csv encontrado"
+    echo "AVISO: Arquivo de resultados não foi criado"
 fi
 
 echo "===================================="
-echo "Arquivos gerados:"
-echo "- Log: $LOG_FILE"
-echo "- Resultados: $RESULTS_CSV (se criado)"
-if [ "$IS_JMETER_5_PLUS" = true ]; then
-    echo "- Relatório: ${RESULTS_DIR}/report-${TIMESTAMP} (se gerado)"
-fi
+echo "Teste concluído!"
 echo "====================================" 
