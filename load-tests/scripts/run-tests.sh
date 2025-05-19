@@ -9,23 +9,37 @@ JMETER_LOG_DIR="${SCRIPT_DIR}/jmeter/logs"
 
 # Verificar se o JMeter está instalado
 check_jmeter() {
-    # Tentar verificar com --version primeiro (mais novo)
-    if jmeter --version 2>/dev/null | grep -q "Apache JMeter"; then
-        return 0
+    # Encontrar o caminho completo para o JMeter
+    JMETER_CMD=$(which jmeter 2>/dev/null || echo "")
+    
+    if [ -z "$JMETER_CMD" ]; then
+        # Tentar locais comuns de instalação
+        for path in "/usr/bin/jmeter" "/usr/local/bin/jmeter" "/opt/jmeter/bin/jmeter" "$HOME/jmeter/bin/jmeter"; do
+            if [ -x "$path" ]; then
+                JMETER_CMD="$path"
+                break
+            fi
+        done
     fi
     
-    # Tentar verificar com -v (mais antigo)
-    if jmeter -v 2>/dev/null | grep -q "Apache JMeter\|Software Foundation"; then
-        return 0
+    # Se ainda não encontrou, não está instalado
+    if [ -z "$JMETER_CMD" ]; then
+        echo "Apache JMeter não está instalado. Por favor, instale o JMeter primeiro."
+        echo "Você pode instalar via:"
+        echo "  1. Download direto: https://jmeter.apache.org/download_jmeter.cgi"
+        echo "  2. Ou usando package manager (exemplo Ubuntu/Debian):"
+        echo "     sudo apt-get update && sudo apt-get install jmeter"
+        exit 1
     fi
     
-    # Se nenhum dos comandos acima funcionou, JMeter não está instalado
-    echo "Apache JMeter não está instalado. Por favor, instale o JMeter primeiro."
-    echo "Você pode instalar via:"
-    echo "  1. Download direto: https://jmeter.apache.org/download_jmeter.cgi"
-    echo "  2. Ou usando package manager (exemplo Ubuntu/Debian):"
-    echo "     sudo apt-get update && sudo apt-get install jmeter"
-    exit 1
+    # Verificar a versão do JMeter usando o caminho completo
+    JMETER_VERSION=$("$JMETER_CMD" --version 2>/dev/null | head -n 1 || "$JMETER_CMD" -v 2>/dev/null | head -n 1)
+    echo "JMeter encontrado: $JMETER_CMD"
+    echo "Versão do JMeter: $JMETER_VERSION"
+    
+    # Exportar o caminho para uso posterior
+    export JMETER_CMD
+    return 0
 }
 
 # Criar diretórios necessários e garantir permissões
@@ -47,9 +61,15 @@ read_input() {
 # Verificar JMeter
 check_jmeter
 
-# Obter versão do JMeter
-JMETER_VERSION=$(jmeter --version 2>/dev/null | head -n 1 || jmeter -v 2>/dev/null | head -n 1)
-echo "Versão do JMeter: $JMETER_VERSION"
+# Detectar se estamos usando JMeter 5.x ou mais recente
+IS_JMETER_5_PLUS=false
+if [[ "$JMETER_VERSION" =~ 5\.|6\. ]]; then
+    IS_JMETER_5_PLUS=true
+    echo "Detectado JMeter versão 5+ ($JMETER_VERSION)"
+else
+    echo "Detectado JMeter versão anterior a 5 ($JMETER_VERSION)"
+fi
+
 echo "Diretório de trabalho: $SCRIPT_DIR"
 
 # Leitura interativa dos parâmetros
@@ -97,12 +117,6 @@ fi
 
 # Criar um arquivo JMX compatível com JMeter 5.6
 TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test-${TIMESTAMP}.jmx"
-
-# Detectar se estamos usando JMeter 5.x ou mais recente
-IS_JMETER_5_PLUS=false
-if [[ "$JMETER_VERSION" =~ 5\.|6\. ]]; then
-    IS_JMETER_5_PLUS=true
-fi
 
 if [ "$IS_JMETER_5_PLUS" = true ]; then
     cat > "$TEST_PLAN_FILE" << 'EOL'
@@ -220,7 +234,7 @@ chmod 777 "$RESULTS_CSV"
 # Usar comando para JMeter 5+
 if [ "$IS_JMETER_5_PLUS" = true ]; then
     echo "Usando comando JMeter 5+"
-    jmeter --nongui \
+    "$JMETER_CMD" --nongui \
            --testfile "$TEST_PLAN_FILE" \
            --logfile "$LOG_FILE" \
            --jmeterlogfile "$JMETER_LOG_DIR/jmeter.log" \
@@ -235,7 +249,7 @@ if [ "$IS_JMETER_5_PLUS" = true ]; then
     JMETER_EXIT_CODE=$?
 else
     echo "Usando comando JMeter para versões antigas"
-    jmeter -n -t "$TEST_PLAN_FILE" \
+    "$JMETER_CMD" -n -t "$TEST_PLAN_FILE" \
            -Jhost="$HOST" \
            -Jport="$PORT" \
            -Jusers="$USERS" \
