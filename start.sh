@@ -2,7 +2,7 @@
 set -euo pipefail
 docker compose up --build -d
 echo "🌐 Nginx LB → http://localhost/"
-echo "🐇 RabbitMQ UI → http://localhost:15673 (admin/admin)"
+echo "🐇 RabbitMQ UI → http://localhost:25673 (admin/admin)"
 echo "🐓 Cockroach UI → http://localhost:8080"
 echo "📘 Swagger → http://localhost/docs"
 echo "📊 Prometheus → http://localhost:9091"
