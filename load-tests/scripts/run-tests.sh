@@ -22,6 +22,14 @@ RESULTS_DIR="${SCRIPT_DIR}/jmeter/results"
 mkdir -p "$TEST_PLAN_DIR"
 mkdir -p "$RESULTS_DIR"
 
+# Criar arquivo de propriedades JMeter para resolver problema de segurança XStream
+JMETER_PROPS_FILE="${SCRIPT_DIR}/jmeter/jmeter.properties"
+mkdir -p "$(dirname "$JMETER_PROPS_FILE")"
+cat > "$JMETER_PROPS_FILE" << 'EOL'
+# Propriedades para resolver problema de segurança XStream
+jmeter.serializer.xstream.allowedPackages=org.apache.jmeter.save,org.apache.jmeter.protocol.http,org.apache.jmeter.util
+EOL
+
 # Criar arquivo de teste JMeter se não existir
 TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test.jmx"
 if [ ! -f "$TEST_PLAN_FILE" ]; then
@@ -109,6 +117,9 @@ read_input() {
 # Verificar JMeter
 check_jmeter
 
+# Mostrar versão do JMeter
+echo "Versão do JMeter: $(jmeter -v | head -n 1)"
+
 # Leitura interativa dos parâmetros
 echo "===================================="
 echo "Configuração do Teste de Carga"
@@ -150,8 +161,13 @@ if [[ ! $confirm =~ ^[Ss]$ ]]; then
     exit 0
 fi
 
-# Executar JMeter em modo não-GUI
-jmeter -n -t "$TEST_PLAN_FILE" \
+# Executar JMeter em modo não-GUI com propriedades adicionais para resolver o problema de segurança XStream
+jmeter -n \
+  -p "$JMETER_PROPS_FILE" \
+  -JxstreamAllowAll=true \
+  -JxstreamAllowTypes=org.apache.jmeter.save.ScriptWrapper \
+  -JxstreamAllowTypesByRegExp=.* \
+  -t "$TEST_PLAN_FILE" \
   -Jhost="$HOST" \
   -Jport="$PORT" \
   -Jusers="$USERS" \
@@ -171,10 +187,44 @@ echo "Teste concluído!"
 echo "Resultados salvos em: $RESULTS_FILE"
 echo "===================================="
 
+# Verificar se o arquivo de resultados foi criado
+if [ -f "${RESULTS_FILE}.jtl" ]; then
+    echo "Arquivo de resultados criado com sucesso."
+else
+    echo "AVISO: O arquivo de resultados não foi criado."
+fi
+
 # Perguntar se deseja gerar relatório HTML
 read -p "Deseja gerar um relatório HTML dos resultados? (s/N) " generate_report
 if [[ $generate_report =~ ^[Ss]$ ]]; then
     echo "Gerando relatório HTML..."
-    jmeter -g "${RESULTS_FILE}.jtl" -e -o "${RESULTS_DIR}/report-${TIMESTAMP}"
-    echo "Relatório disponível em: ${RESULTS_DIR}/report-${TIMESTAMP}"
+    
+    # Tentar diferentes sintaxes baseado na versão do JMeter
+    JMETER_VERSION=$(jmeter -v | grep -oP '(?<=ApacheJMeter_core-).*?(?= )')
+    REPORT_DIR="${RESULTS_DIR}/report-${TIMESTAMP}"
+    
+    # Criando diretório para relatório
+    mkdir -p "$REPORT_DIR"
+    
+    if [ -f "${RESULTS_FILE}.jtl" ]; then
+        # Tentar com a sintaxe padrão
+        if jmeter -g "${RESULTS_FILE}.jtl" -o "$REPORT_DIR" 2>/dev/null; then
+            echo "Relatório gerado com sucesso."
+        # Tentar com a sintaxe alternativa
+        elif jmeter -g "${RESULTS_FILE}.jtl" -e -o "$REPORT_DIR" 2>/dev/null; then
+            echo "Relatório gerado com sucesso."
+        else
+            echo "Erro ao gerar relatório HTML. Tentando método alternativo..."
+            # Mostrar informações básicas sobre os resultados
+            echo "Resumo dos resultados (se disponível):"
+            if command -v grep &> /dev/null && [ -f "${RESULTS_FILE}.jtl" ]; then
+                echo "Total de amostras: $(grep -c "<sample" "${RESULTS_FILE}.jtl" 2>/dev/null || echo "N/A")"
+                echo "Consulte os arquivos de resultados manualmente em: $RESULTS_DIR"
+            fi
+        fi
+    else
+        echo "ERRO: Arquivo de resultados ${RESULTS_FILE}.jtl não encontrado."
+    fi
+    
+    echo "Relatório disponível em: $REPORT_DIR (se gerado com sucesso)"
 fi 
