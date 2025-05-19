@@ -2,12 +2,12 @@ version: '3.8'
 
 # ---------- VARIÁVEIS COMUNS ----------
 x-common-env: &common-env
-  - REDIS_HOST=redis
-  - REDIS_PORT=6379
-  - MQ_HOST=rabbitmq
-  - MQ_PORT=5672
-  - STORAGE_BACKEND=cockroach
-  - COCKROACH_DSN=postgresql://root@cockroach1:26257/kvdb?sslmode=disable
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  MQ_HOST: rabbitmq
+  MQ_PORT: 5672
+  STORAGE_BACKEND: cockroach
+  COCKROACH_DSN: postgresql://root@cockroach1:26257/kvdb?sslmode=disable
 
 services:
   # ---------- DATA LAYER ----------
@@ -86,7 +86,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    environment: *common-env
+    environment:
+      <<: *common-env
     restart: unless-stopped
     expose: ["8000"]
     ports:
@@ -109,10 +110,10 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-    environment: 
+    environment:
       <<: *common-env
-      METRICS_PORT: 9090
-      HEALTH_PORT: 8080
+      METRICS_PORT: "9090"
+      HEALTH_PORT: "8080"
     restart: unless-stopped
     ports:
       - "9090:9090"  # Para métricas Prometheus
