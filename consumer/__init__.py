@@ -1,0 +1,1 @@
+# Módulo consumer para processamento assíncrono de operações key-value 

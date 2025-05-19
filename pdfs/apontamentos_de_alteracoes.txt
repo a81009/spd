@@ -1,0 +1,35 @@
+HEALTHCHECK
+
+Implementamos com sucesso melhorias significativas no sistema de health checks e no monitoramento do projeto. Veja o que foi adicionado:
+1. Sistema de Health Checks Abrangente
+API de Health Check Completa:
+/health - Verifica todos os componentes (storage, cache, mensageria)
+/health/live - Liveness probe para Kubernetes
+/health/ready - Readiness probe para Kubernetes
+Health Checks para cada componente:
+Storage (CockroachDB)
+Cache (Redis)
+Mensageria (RabbitMQ)
+2. Métricas de Monitoramento
+Sistema de métricas usando Prometheus:
+Contador de requisições por endpoint
+Latência de requisições HTTP
+Métricas de cache (hit/miss)
+Métricas de banco de dados (latência, contadores)
+Métricas de filas (tamanho, tempo de processamento)
+3. Visualização com Grafana
+Adicionado serviço Grafana para visualização das métricas
+Pré-configurado para conectar ao Prometheus
+4. Melhorias na Escalabilidade e Resiliência
+Múltiplas Instâncias:
+API configurada para executar em 2 réplicas
+Consumer configurado para executar em 2 réplicas paralelas
+Healthchecks para Docker Compose:
+Todos os serviços tem health checks configurados
+Dependências configuras para esperar serviços saudáveis
+5. Graceful Shutdown
+Consumer agora gerencia sinais de término
+Sistema marca serviços como não saudáveis durante o desligamento
+Seu sistema está agora muito mais robusto e alinhado com os requisitos de monitoramento, escalabilidade e tolerância a falhas mencionados no enunciado do projeto.
+
+

@@ -2,8 +2,10 @@
 import asyncio
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException, Body, status
+from fastapi import FastAPI, HTTPException, Body, status, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from prometheus_client import make_asgi_app
 
 # camadas internas (criadas nos passos anteriores)
 from .storage import backend          # ↔ Cockroach ou outro backend
@@ -11,10 +13,28 @@ from .cache import get as cache_get   # ↔ Redis
 from .cache import set as cache_set
 from .cache import delete as cache_del
 from .mq import mq                    # ↔ RabbitMQ producer
+from .metrics import MetricsMiddleware, CACHE_HIT, CACHE_MISS, DB_OPERATION_LATENCY
+from .health_check import full_health_check, quick_health_check
 
 CACHE_TTL_SECONDS = 300               # 5 min de cache
 
 app = FastAPI(title="Distributed KV-Store")
+
+# Configurar CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Adicionar middleware de métricas
+app.add_middleware(MetricsMiddleware)
+
+# Expor métricas para Prometheus
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 class KVPair(BaseModel):
     data: Dict[str, Any]
@@ -38,7 +58,11 @@ async def get_value(key: str):
         pass  # Redis indisponível – continua
 
     # 2. backend
+    start_time = asyncio.get_event_loop().time()
     value = await backend.get(key)
+    db_latency = asyncio.get_event_loop().time() - start_time
+    DB_OPERATION_LATENCY.labels(operation="get").observe(db_latency)
+    
     if value is None:
         raise HTTPException(status_code=404, detail="Key not found")
 
@@ -51,7 +75,7 @@ async def get_value(key: str):
 async def put_value(body: KVPair = Body(...)):
     """
     PUT /kv  body: {"data":{"key":<foo>,"value":<bar>}}
-    Produz mensagem na fila “add_key” (processada pelo consumer).
+    Produz mensagem na fila "add_key" (processada pelo consumer).
     """
     key = body.data.get("key")
     value = body.data.get("value")
@@ -68,7 +92,7 @@ async def put_value(body: KVPair = Body(...)):
 async def delete_value(key: str):
     """
     DELETE /kv?key=<foo>
-    Envia para fila “del_key” e remove da cache.
+    Envia para fila "del_key" e remove da cache.
     """
     await mq.send("del_key", {"key": key})
     asyncio.create_task(cache_del(key))
@@ -78,12 +102,35 @@ async def delete_value(key: str):
 @app.get("/health")
 async def healthcheck():
     """
-    Verificação simples do backend.
-    (Podes expandir com checks a Redis e RabbitMQ se quiseres.)
+    Verificação completa de saúde do sistema.
+    Verifica backend, cache e sistema de mensageria.
     """
-    try:
-        await backend.put("_probe", "_ok")
-        await backend.delete("_probe")
-        return {"status": "ok"}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"backend error: {exc}")
+    return await full_health_check()
+
+
+@app.get("/health/live", status_code=status.HTTP_200_OK)
+async def liveness_check():
+    """
+    Verificação rápida para Kubernetes liveness probe.
+    Apenas verifica se o sistema está respondendo.
+    """
+    is_alive = await quick_health_check()
+    if not is_alive:
+        raise HTTPException(status_code=503, detail="Service unavailable")
+    return {"status": "alive"}
+
+
+@app.get("/health/ready", status_code=status.HTTP_200_OK)
+async def readiness_check():
+    """
+    Verificação de prontidão para Kubernetes readiness probe.
+    Verifica se todos os componentes estão prontos para receber tráfego.
+    """
+    health_result = await full_health_check()
+    if health_result["status"] != "healthy":
+        raise HTTPException(
+            status_code=503, 
+            detail="Service not ready", 
+            headers={"Retry-After": "10"}
+        )
+    return {"status": "ready"}

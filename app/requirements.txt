@@ -5,3 +5,5 @@ asyncpg==0.29.0
 redis[asyncio]==5.0.4     # ← novo
 aio-pika==9.4.0           # ← novo
 python-dotenv==1.0.1
+prometheus-client==0.19.0  # ← para métricas
+fastapi-health==0.4.0      # ← para health checks avançados
