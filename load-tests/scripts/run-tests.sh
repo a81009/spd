@@ -22,88 +22,6 @@ RESULTS_DIR="${SCRIPT_DIR}/jmeter/results"
 mkdir -p "$TEST_PLAN_DIR"
 mkdir -p "$RESULTS_DIR"
 
-# Criar arquivo de propriedades JMeter para resolver problema de segurança XStream
-JMETER_PROPS_FILE="${SCRIPT_DIR}/jmeter/jmeter.properties"
-mkdir -p "$(dirname "$JMETER_PROPS_FILE")"
-cat > "$JMETER_PROPS_FILE" << 'EOL'
-# Propriedades para resolver problema de segurança XStream
-jmeter.serializer.xstream.allowedPackages=org.apache.jmeter.save,org.apache.jmeter.protocol.http,org.apache.jmeter.util
-EOL
-
-# Criar arquivo de teste JMeter se não existir
-TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test.jmx"
-if [ ! -f "$TEST_PLAN_FILE" ]; then
-    cat > "$TEST_PLAN_FILE" << 'EOL'
-<?xml version="1.0" encoding="UTF-8"?>
-<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.5">
-  <hashTree>
-    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="KV Store Test Plan">
-      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments">
-        <collectionProp name="Arguments.arguments"/>
-      </elementProp>
-      <boolProp name="TestPlan.functional_mode">false</boolProp>
-      <stringProp name="TestPlan.comments"></stringProp>
-    </TestPlan>
-    <hashTree>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
-        <intProp name="ThreadGroup.num_threads">${__P(users,10)}</intProp>
-        <intProp name="ThreadGroup.ramp_time">${__P(rampup,5)}</intProp>
-        <longProp name="ThreadGroup.duration">${__P(duration,60)}</longProp>
-        <boolProp name="ThreadGroup.scheduler">true</boolProp>
-        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
-      </ThreadGroup>
-      <hashTree>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="PUT Request">
-          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
-          <stringProp name="HTTPSampler.protocol">http</stringProp>
-          <stringProp name="HTTPSampler.method">PUT</stringProp>
-          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
-          <stringProp name="HTTPSampler.path">/kv/${__Random(1,1000)}</stringProp>
-          <stringProp name="HTTPSampler.contentEncoding">UTF-8</stringProp>
-          <stringProp name="HTTPSampler.postData">{"value": "${__Random(1,1000)}"}</stringProp>
-        </HTTPSamplerProxy>
-        <hashTree>
-          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="PUT Throughput">
-            <intProp name="throughput">${__P(put_throughput,50)}</intProp>
-          </ConstantThroughputTimer>
-          <hashTree/>
-        </hashTree>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET Request">
-          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
-          <stringProp name="HTTPSampler.protocol">http</stringProp>
-          <stringProp name="HTTPSampler.method">GET</stringProp>
-          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
-          <stringProp name="HTTPSampler.path">/kv/${__Random(1,1000)}</stringProp>
-        </HTTPSamplerProxy>
-        <hashTree>
-          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="GET Throughput">
-            <intProp name="throughput">${__P(get_throughput,200)}</intProp>
-          </ConstantThroughputTimer>
-          <hashTree/>
-        </hashTree>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="DELETE Request">
-          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
-          <stringProp name="HTTPSampler.protocol">http</stringProp>
-          <stringProp name="HTTPSampler.method">DELETE</stringProp>
-          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
-          <stringProp name="HTTPSampler.path">/kv/${__Random(1,1000)}</stringProp>
-        </HTTPSamplerProxy>
-        <hashTree>
-          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="DELETE Throughput">
-            <intProp name="throughput">${__P(delete_throughput,20)}</intProp>
-          </ConstantThroughputTimer>
-          <hashTree/>
-        </hashTree>
-      </hashTree>
-    </hashTree>
-  </hashTree>
-</jmeterTestPlan>
-EOL
-fi
-
 # Função para ler input do usuário com valor padrão
 read_input() {
     local prompt=$1
@@ -118,7 +36,8 @@ read_input() {
 check_jmeter
 
 # Mostrar versão do JMeter
-echo "Versão do JMeter: $(jmeter -v | head -n 1)"
+JMETER_VERSION=$(jmeter -v | head -n 1)
+echo "Versão do JMeter: $JMETER_VERSION"
 
 # Leitura interativa dos parâmetros
 echo "===================================="
@@ -138,6 +57,7 @@ TEST_NAME=$(read_input "Nome do teste" "kv-store-test")
 # Carimbo de data/hora para o nome do arquivo
 TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
 RESULTS_FILE="${RESULTS_DIR}/${TEST_NAME}-${TIMESTAMP}"
+RESULTS_CSV="${RESULTS_FILE}.csv"
 
 # Exibir configurações finais
 echo "===================================="
@@ -151,7 +71,7 @@ echo "Duração:            $DURATION segundos"
 echo "Taxa PUT:           $PUT_THROUGHPUT/seg"
 echo "Taxa GET:           $GET_THROUGHPUT/seg"
 echo "Taxa DELETE:        $DELETE_THROUGHPUT/seg"
-echo "Arquivo resultados: $RESULTS_FILE"
+echo "Arquivo resultados: $RESULTS_CSV"
 echo "===================================="
 
 # Confirmar execução
@@ -161,70 +81,152 @@ if [[ ! $confirm =~ ^[Ss]$ ]]; then
     exit 0
 fi
 
-# Executar JMeter em modo não-GUI com propriedades adicionais para resolver o problema de segurança XStream
-jmeter -n \
-  -p "$JMETER_PROPS_FILE" \
-  -JxstreamAllowAll=true \
-  -JxstreamAllowTypes=org.apache.jmeter.save.ScriptWrapper \
-  -JxstreamAllowTypesByRegExp=.* \
-  -t "$TEST_PLAN_FILE" \
-  -Jhost="$HOST" \
-  -Jport="$PORT" \
-  -Jusers="$USERS" \
-  -Jrampup="$RAMPUP" \
-  -Jduration="$DURATION" \
-  -Jput_throughput="$PUT_THROUGHPUT" \
-  -Jget_throughput="$GET_THROUGHPUT" \
-  -Jdelete_throughput="$DELETE_THROUGHPUT" \
-  -Jresults_file="${RESULTS_FILE}-aggregate.csv" \
-  -Jperfmon_file="${RESULTS_FILE}-perfmon.csv" \
-  -Jtps_file="${RESULTS_FILE}-tps.csv" \
-  -Jerror_file="${RESULTS_FILE}-errors.xml" \
-  -l "${RESULTS_FILE}.jtl"
+# Criar um arquivo JMX simples (formato CSV para evitar problemas de XStream)
+TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test-simple.jmx"
+
+cat > "$TEST_PLAN_FILE" << 'EOL'
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="2.1">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="KV Store Test Plan">
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+      <stringProp name="TestPlan.user_define_classpath"></stringProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <stringProp name="TestPlan.comments"></stringProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <intProp name="LoopController.loops">-1</intProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(users,10)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,5)}</stringProp>
+        <longProp name="ThreadGroup.start_time">1432618622000</longProp>
+        <longProp name="ThreadGroup.end_time">1432618622000</longProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <stringProp name="ThreadGroup.duration">${__P(duration,60)}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET Request">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+            <collectionProp name="Arguments.arguments"/>
+          </elementProp>
+          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.contentEncoding"></stringProp>
+          <stringProp name="HTTPSampler.path">/kv/${__Random(1,1000)}</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
+          <stringProp name="HTTPSampler.implementation">HttpClient4</stringProp>
+          <boolProp name="HTTPSampler.monitor">false</boolProp>
+          <stringProp name="HTTPSampler.embedded_url_re"></stringProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="GET Throughput">
+            <stringProp name="ConstantThroughputTimer.throughput">${__P(get_throughput,200)}</stringProp>
+          </ConstantThroughputTimer>
+          <hashTree/>
+        </hashTree>
+      </hashTree>
+      <ResultCollector guiclass="StatVisualizer" testclass="ResultCollector" testname="Aggregate Report">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>false</assertions>
+            <subresults>false</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>false</responseDataOnError>
+            <saveAssertionResultsFailureMessage>false</saveAssertionResultsFailureMessage>
+            <assertionsResultsToSave>0</assertionsResultsToSave>
+            <bytes>true</bytes>
+          </value>
+        </objProp>
+        <stringProp name="filename"></stringProp>
+      </ResultCollector>
+      <hashTree/>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
+EOL
 
 echo "===================================="
-echo "Teste concluído!"
-echo "Resultados salvos em: $RESULTS_FILE"
+echo "Executando teste de carga..."
 echo "===================================="
 
-# Verificar se o arquivo de resultados foi criado
-if [ -f "${RESULTS_FILE}.jtl" ]; then
-    echo "Arquivo de resultados criado com sucesso."
+# Tentar usar a versão mais simples do comando JMeter (para versões antigas)
+jmeter -n -t "$TEST_PLAN_FILE" \
+       -Jhost="$HOST" \
+       -Jport="$PORT" \
+       -Jusers="$USERS" \
+       -Jrampup="$RAMPUP" \
+       -Jduration="$DURATION" \
+       -Jget_throughput="$GET_THROUGHPUT" \
+       -l "$RESULTS_CSV" \
+       > "${RESULTS_FILE}.log" 2>&1
+       
+JMETER_EXIT_CODE=$?
+
+# Verificar se o teste foi executado com sucesso
+if [ $JMETER_EXIT_CODE -eq 0 ]; then
+    echo "===================================="
+    echo "Teste concluído com sucesso!"
+    echo "===================================="
 else
-    echo "AVISO: O arquivo de resultados não foi criado."
+    echo "===================================="
+    echo "ERRO: Teste falhou com código $JMETER_EXIT_CODE"
+    echo "Verifique o log para mais detalhes: ${RESULTS_FILE}.log"
+    echo "===================================="
+    echo "Últimas 10 linhas de log:"
+    tail -n 10 "${RESULTS_FILE}.log"
+    echo "===================================="
 fi
 
-# Perguntar se deseja gerar relatório HTML
-read -p "Deseja gerar um relatório HTML dos resultados? (s/N) " generate_report
-if [[ $generate_report =~ ^[Ss]$ ]]; then
-    echo "Gerando relatório HTML..."
+# Verificar se o arquivo de resultados foi criado
+if [ -f "$RESULTS_CSV" ]; then
+    echo "Arquivo de resultados criado: $RESULTS_CSV"
     
-    # Tentar diferentes sintaxes baseado na versão do JMeter
-    JMETER_VERSION=$(jmeter -v | grep -oP '(?<=ApacheJMeter_core-).*?(?= )')
-    REPORT_DIR="${RESULTS_DIR}/report-${TIMESTAMP}"
-    
-    # Criando diretório para relatório
-    mkdir -p "$REPORT_DIR"
-    
-    if [ -f "${RESULTS_FILE}.jtl" ]; then
-        # Tentar com a sintaxe padrão
-        if jmeter -g "${RESULTS_FILE}.jtl" -o "$REPORT_DIR" 2>/dev/null; then
-            echo "Relatório gerado com sucesso."
-        # Tentar com a sintaxe alternativa
-        elif jmeter -g "${RESULTS_FILE}.jtl" -e -o "$REPORT_DIR" 2>/dev/null; then
-            echo "Relatório gerado com sucesso."
-        else
-            echo "Erro ao gerar relatório HTML. Tentando método alternativo..."
-            # Mostrar informações básicas sobre os resultados
-            echo "Resumo dos resultados (se disponível):"
-            if command -v grep &> /dev/null && [ -f "${RESULTS_FILE}.jtl" ]; then
-                echo "Total de amostras: $(grep -c "<sample" "${RESULTS_FILE}.jtl" 2>/dev/null || echo "N/A")"
-                echo "Consulte os arquivos de resultados manualmente em: $RESULTS_DIR"
-            fi
-        fi
-    else
-        echo "ERRO: Arquivo de resultados ${RESULTS_FILE}.jtl não encontrado."
+    # Exibir estatísticas básicas se os utilitários estiverem disponíveis
+    if command -v wc &> /dev/null && command -v head &> /dev/null && command -v tail &> /dev/null && command -v awk &> /dev/null; then
+        echo "Estatísticas básicas:"
+        echo "Total de amostras: $(wc -l < "$RESULTS_CSV")"
+        echo "Primeiras linhas:"
+        head -n 2 "$RESULTS_CSV"
+        echo "..."
+        echo "Últimas linhas:"
+        tail -n 2 "$RESULTS_CSV"
     fi
-    
-    echo "Relatório disponível em: $REPORT_DIR (se gerado com sucesso)"
-fi 
+else
+    echo "AVISO: Arquivo de resultados não foi criado: $RESULTS_CSV"
+fi
+
+echo "===================================="
+echo "Arquivos gerados:"
+echo "- Log: ${RESULTS_FILE}.log"
+echo "- Resultados: $RESULTS_CSV (se criado)"
+echo "====================================" 
