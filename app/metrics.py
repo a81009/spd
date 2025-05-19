@@ -54,18 +54,36 @@ def calculate_duration(start_time):
 class MetricsMiddleware:
     """Middleware para FastAPI que registra métricas para todas as requisições."""
     
-    async def __call__(self, request, call_next):
-        method = request.method
-        path = request.url.path
+    def __init__(self, app):
+        self.app = app
+    
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+            
+        method = scope.get("method", "")
+        path = scope.get("path", "")
         
         start_time = measure_time()
         
-        response = await call_next(request)
+        # Captura o status code usando um wrapper para send
+        status_code = [200]  # Default
         
-        duration = calculate_duration(start_time)
-        status_code = response.status_code
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                status_code[0] = message["status"]
+            await send(message)
         
-        REQUEST_COUNT.labels(method=method, endpoint=path, status_code=status_code).inc()
-        REQUEST_LATENCY.labels(method=method, endpoint=path).observe(duration)
-        
-        return response 
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            duration = calculate_duration(start_time)
+            REQUEST_COUNT.labels(
+                method=method, 
+                endpoint=path, 
+                status_code=status_code[0]
+            ).inc()
+            REQUEST_LATENCY.labels(
+                method=method, 
+                endpoint=path
+            ).observe(duration) 
