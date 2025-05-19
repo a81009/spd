@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Expor portas para métricas e health check
-EXPOSE 9090
+EXPOSE 9092
 EXPOSE 8080
 
-CMD ["python", "-m", "worker"]
+CMD ["python", "worker.py"]

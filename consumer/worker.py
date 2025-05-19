@@ -6,7 +6,7 @@ import asyncpg
 import redis.asyncio as redis
 import aio_pika
 import signal
-from .metrics import (
+from metrics import (
     measure_time, 
     calculate_duration, 
     MESSAGES_PROCESSED, 
