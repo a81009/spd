@@ -13,9 +13,88 @@ check_jmeter() {
     fi
 }
 
-# Diretórios
-TEST_PLAN_DIR="/jmeter/test-plans"
-RESULTS_DIR="/jmeter/results"
+# Diretórios (usando caminhos relativos)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEST_PLAN_DIR="${SCRIPT_DIR}/jmeter/test-plans"
+RESULTS_DIR="${SCRIPT_DIR}/jmeter/results"
+
+# Criar diretórios necessários
+mkdir -p "$TEST_PLAN_DIR"
+mkdir -p "$RESULTS_DIR"
+
+# Criar arquivo de teste JMeter se não existir
+TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test.jmx"
+if [ ! -f "$TEST_PLAN_FILE" ]; then
+    cat > "$TEST_PLAN_FILE" << 'EOL'
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.5">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="KV Store Test Plan">
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <stringProp name="TestPlan.comments"></stringProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
+        <intProp name="ThreadGroup.num_threads">${__P(users,10)}</intProp>
+        <intProp name="ThreadGroup.ramp_time">${__P(rampup,5)}</intProp>
+        <longProp name="ThreadGroup.duration">${__P(duration,60)}</longProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="PUT Request">
+          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.method">PUT</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <stringProp name="HTTPSampler.path">/kv/${__Random(1,1000)}</stringProp>
+          <stringProp name="HTTPSampler.contentEncoding">UTF-8</stringProp>
+          <stringProp name="HTTPSampler.postData">{"value": "${__Random(1,1000)}"}</stringProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="PUT Throughput">
+            <intProp name="throughput">${__P(put_throughput,50)}</intProp>
+          </ConstantThroughputTimer>
+          <hashTree/>
+        </hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET Request">
+          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <stringProp name="HTTPSampler.path">/kv/${__Random(1,1000)}</stringProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="GET Throughput">
+            <intProp name="throughput">${__P(get_throughput,200)}</intProp>
+          </ConstantThroughputTimer>
+          <hashTree/>
+        </hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="DELETE Request">
+          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.method">DELETE</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <stringProp name="HTTPSampler.path">/kv/${__Random(1,1000)}</stringProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="DELETE Throughput">
+            <intProp name="throughput">${__P(delete_throughput,20)}</intProp>
+          </ConstantThroughputTimer>
+          <hashTree/>
+        </hashTree>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
+EOL
+fi
 
 # Função para ler input do usuário com valor padrão
 read_input() {
@@ -71,11 +150,8 @@ if [[ ! $confirm =~ ^[Ss]$ ]]; then
     exit 0
 fi
 
-# Criar diretório de resultados se não existir
-mkdir -p "$RESULTS_DIR"
-
 # Executar JMeter em modo não-GUI
-jmeter -n -t "${TEST_PLAN_DIR}/kv-store-test.jmx" \
+jmeter -n -t "$TEST_PLAN_FILE" \
   -Jhost="$HOST" \
   -Jport="$PORT" \
   -Jusers="$USERS" \
@@ -99,6 +175,6 @@ echo "===================================="
 read -p "Deseja gerar um relatório HTML dos resultados? (s/N) " generate_report
 if [[ $generate_report =~ ^[Ss]$ ]]; then
     echo "Gerando relatório HTML..."
-    jmeter -g "${RESULTS_FILE}.jtl" -o "${RESULTS_DIR}/report-${TIMESTAMP}"
+    jmeter -g "${RESULTS_FILE}.jtl" -e -o "${RESULTS_DIR}/report-${TIMESTAMP}"
     echo "Relatório disponível em: ${RESULTS_DIR}/report-${TIMESTAMP}"
 fi 
