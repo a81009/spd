@@ -112,12 +112,12 @@ services:
         condition: service_healthy
     environment:
       <<: *common-env
-      METRICS_PORT: "9090"
+      METRICS_PORT: "9092"
       HEALTH_PORT: "8080"
     restart: unless-stopped
     ports:
-      - "9090:9090"  # Para métricas Prometheus
-      - "8081:8080"  # Para health checks
+      - "9092:9092"
+      - "8081:8080"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
@@ -125,7 +125,7 @@ services:
       retries: 3
       start_period: 15s
     deploy:
-      replicas: 2  # Inicia duas instâncias para processamento paralelo
+      replicas: 2
 
   # ---------- MONITORING ----------
   prometheus:
