@@ -1,26 +1,37 @@
 #!/bin/bash
 set -e
 
-# Verificar se o JMeter está instalado
-check_jmeter() {
-    if ! command -v jmeter &> /dev/null; then
-        echo "Apache JMeter não está instalado. Por favor, instale o JMeter primeiro."
-        echo "Você pode instalar via:"
-        echo "  1. Download direto: https://jmeter.apache.org/download_jmeter.cgi"
-        echo "  2. Ou usando package manager (exemplo Ubuntu/Debian):"
-        echo "     sudo apt-get update && sudo apt-get install jmeter"
-        exit 1
-    fi
-}
-
 # Diretórios (usando caminhos relativos)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_PLAN_DIR="${SCRIPT_DIR}/jmeter/test-plans"
 RESULTS_DIR="${SCRIPT_DIR}/jmeter/results"
+JMETER_LOG_DIR="${SCRIPT_DIR}/jmeter/logs"
+
+# Verificar se o JMeter está instalado
+check_jmeter() {
+    # Tentar verificar com --version primeiro (mais novo)
+    if jmeter --version 2>/dev/null | grep -q "Apache JMeter"; then
+        return 0
+    fi
+    
+    # Tentar verificar com -v (mais antigo)
+    if jmeter -v 2>/dev/null | grep -q "Apache JMeter\|Software Foundation"; then
+        return 0
+    fi
+    
+    # Se nenhum dos comandos acima funcionou, JMeter não está instalado
+    echo "Apache JMeter não está instalado. Por favor, instale o JMeter primeiro."
+    echo "Você pode instalar via:"
+    echo "  1. Download direto: https://jmeter.apache.org/download_jmeter.cgi"
+    echo "  2. Ou usando package manager (exemplo Ubuntu/Debian):"
+    echo "     sudo apt-get update && sudo apt-get install jmeter"
+    exit 1
+}
 
 # Criar diretórios necessários e garantir permissões
 mkdir -p "$TEST_PLAN_DIR"
 mkdir -p "$RESULTS_DIR"
+mkdir -p "$JMETER_LOG_DIR"
 chmod -R 777 "${SCRIPT_DIR}/jmeter"
 
 # Função para ler input do usuário com valor padrão
@@ -36,8 +47,8 @@ read_input() {
 # Verificar JMeter
 check_jmeter
 
-# Mostrar versão do JMeter
-JMETER_VERSION=$(jmeter -v 2>&1 | head -n 1)
+# Obter versão do JMeter
+JMETER_VERSION=$(jmeter --version 2>/dev/null | head -n 1 || jmeter -v 2>/dev/null | head -n 1)
 echo "Versão do JMeter: $JMETER_VERSION"
 echo "Diretório de trabalho: $SCRIPT_DIR"
 
@@ -60,7 +71,7 @@ TEST_NAME=$(read_input "Nome do teste" "kv-store-test")
 TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
 RESULTS_FILE="${RESULTS_DIR}/${TEST_NAME}-${TIMESTAMP}"
 RESULTS_CSV="${RESULTS_FILE}.csv"
-LOG_FILE="${RESULTS_FILE}.log"
+LOG_FILE="${JMETER_LOG_DIR}/${TEST_NAME}-${TIMESTAMP}.log"
 
 # Exibir configurações finais
 echo "===================================="
@@ -84,10 +95,67 @@ if [[ ! $confirm =~ ^[Ss]$ ]]; then
     exit 0
 fi
 
-# Criar um arquivo JMX muito simples para JMeter 2.13
-TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test-v2.jmx"
+# Criar um arquivo JMX compatível com JMeter 5.6
+TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test-${TIMESTAMP}.jmx"
 
-cat > "$TEST_PLAN_FILE" << 'EOL'
+# Detectar se estamos usando JMeter 5.x ou mais recente
+IS_JMETER_5_PLUS=false
+if [[ "$JMETER_VERSION" =~ 5\.|6\. ]]; then
+    IS_JMETER_5_PLUS=true
+fi
+
+if [ "$IS_JMETER_5_PLUS" = true ]; then
+    cat > "$TEST_PLAN_FILE" << 'EOL'
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="Test Plan">
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <intProp name="LoopController.loops">-1</intProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(users,10)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,5)}</stringProp>
+        <longProp name="ThreadGroup.start_time">1432618622000</longProp>
+        <longProp name="ThreadGroup.end_time">1432618622000</longProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <stringProp name="ThreadGroup.duration">${__P(duration,60)}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET Request">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments">
+            <collectionProp name="Arguments.arguments"/>
+          </elementProp>
+          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
+          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.path">/kv/1</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
+EOL
+else
+    # Versão para JMeter mais antigo
+    cat > "$TEST_PLAN_FILE" << 'EOL'
 <?xml version="1.0" encoding="UTF-8"?>
 <jmeterTestPlan version="1.2" properties="2.1">
   <hashTree>
@@ -122,86 +190,59 @@ cat > "$TEST_PLAN_FILE" << 'EOL'
           </elementProp>
           <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
           <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
-          <stringProp name="HTTPSampler.connect_timeout"></stringProp>
-          <stringProp name="HTTPSampler.response_timeout"></stringProp>
           <stringProp name="HTTPSampler.protocol">http</stringProp>
-          <stringProp name="HTTPSampler.contentEncoding"></stringProp>
           <stringProp name="HTTPSampler.path">/kv/1</stringProp>
           <stringProp name="HTTPSampler.method">GET</stringProp>
           <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
           <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
           <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
           <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
-          <stringProp name="HTTPSampler.implementation">HttpClient4</stringProp>
-          <boolProp name="HTTPSampler.monitor">false</boolProp>
-          <stringProp name="HTTPSampler.embedded_url_re"></stringProp>
         </HTTPSamplerProxy>
-        <hashTree>
-          <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Response Assertion">
-            <collectionProp name="Asserion.test_strings"/>
-            <stringProp name="Assertion.test_field">Assertion.response_code</stringProp>
-            <boolProp name="Assertion.assume_success">false</boolProp>
-            <intProp name="Assertion.test_type">16</intProp>
-          </ResponseAssertion>
-          <hashTree/>
-        </hashTree>
+        <hashTree/>
       </hashTree>
-      <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree">
-        <boolProp name="ResultCollector.error_logging">false</boolProp>
-        <objProp>
-          <name>saveConfig</name>
-          <value class="SampleSaveConfiguration">
-            <time>true</time>
-            <latency>true</latency>
-            <timestamp>true</timestamp>
-            <success>true</success>
-            <label>true</label>
-            <code>true</code>
-            <message>true</message>
-            <threadName>true</threadName>
-            <dataType>true</dataType>
-            <encoding>false</encoding>
-            <assertions>false</assertions>
-            <subresults>false</subresults>
-            <responseData>false</responseData>
-            <samplerData>false</samplerData>
-            <xml>false</xml>
-            <fieldNames>true</fieldNames>
-            <responseHeaders>false</responseHeaders>
-            <requestHeaders>false</requestHeaders>
-            <responseDataOnError>false</responseDataOnError>
-            <saveAssertionResultsFailureMessage>false</saveAssertionResultsFailureMessage>
-            <assertionsResultsToSave>0</assertionsResultsToSave>
-            <bytes>true</bytes>
-            <url>true</url>
-          </value>
-        </objProp>
-        <stringProp name="filename"></stringProp>
-      </ResultCollector>
-      <hashTree/>
     </hashTree>
   </hashTree>
 </jmeterTestPlan>
 EOL
+fi
 
 echo "===================================="
 echo "Executando teste de carga..."
 echo "===================================="
 
-# Comando JMeter simplificado para versões antigas
-# Create resultados.jtl in the current directory first
+# Configurar JMeter para usar o diretório de log
+export JVM_ARGS="-Djava.io.tmpdir=$JMETER_LOG_DIR -Djava.awt.headless=true"
+
+# Criar arquivos com permissões
 touch "$RESULTS_CSV"
 chmod 777 "$RESULTS_CSV"
 
-# Executar jmeter com comando simples
-jmeter -n -t "$TEST_PLAN_FILE" \
-       -Jhost="$HOST" \
-       -Jport="$PORT" \
-       -Jusers="$USERS" \
-       -Jrampup="$RAMPUP" \
-       -l "$RESULTS_CSV" > "$LOG_FILE" 2>&1
-       
-JMETER_EXIT_CODE=$?
+# Usar comando para JMeter 5+
+if [ "$IS_JMETER_5_PLUS" = true ]; then
+    echo "Usando comando JMeter 5+"
+    jmeter --nongui \
+           --testfile "$TEST_PLAN_FILE" \
+           --logfile "$LOG_FILE" \
+           --jmeterlogfile "$JMETER_LOG_DIR/jmeter.log" \
+           -Jhost="$HOST" \
+           -Jport="$PORT" \
+           -Jusers="$USERS" \
+           -Jrampup="$RAMPUP" \
+           -Jduration="$DURATION" \
+           --reportatendofloadtests \
+           --reportoutputfolder "${RESULTS_DIR}/report-${TIMESTAMP}" \
+           -l "$RESULTS_CSV"
+    JMETER_EXIT_CODE=$?
+else
+    echo "Usando comando JMeter para versões antigas"
+    jmeter -n -t "$TEST_PLAN_FILE" \
+           -Jhost="$HOST" \
+           -Jport="$PORT" \
+           -Jusers="$USERS" \
+           -Jrampup="$RAMPUP" \
+           -l "$RESULTS_CSV" > "$LOG_FILE" 2>&1
+    JMETER_EXIT_CODE=$?
+fi
 
 # Verificar se o teste foi executado com sucesso
 if [ $JMETER_EXIT_CODE -eq 0 ]; then
@@ -243,9 +284,7 @@ echo "===================================="
 echo "Arquivos gerados:"
 echo "- Log: $LOG_FILE"
 echo "- Resultados: $RESULTS_CSV (se criado)"
-echo "===================================="
-
-# Mostrar conteúdo do log
-echo "Últimas 10 linhas do log:"
-tail -n 10 "$LOG_FILE" 2>/dev/null || echo "Log file não disponível"
+if [ "$IS_JMETER_5_PLUS" = true ]; then
+    echo "- Relatório: ${RESULTS_DIR}/report-${TIMESTAMP} (se gerado)"
+fi
 echo "====================================" 
