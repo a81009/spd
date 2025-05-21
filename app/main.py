@@ -309,9 +309,24 @@ async def delete_value(key: str):
     DELETE /kv?key=<foo>
     Envia para fila "del_key" e remove da cache.
     """
-    await mq.send("del_key", {"key": key})
-    asyncio.create_task(cache_del(key))
-    return {"detail": "queued"}
+    try:
+        # Verificar se a chave existe antes de enviar para a fila
+        value = await backend.get(key)
+        
+        # Se existir, enviar para a fila e remover do cache
+        if value is not None:
+            await mq.send("del_key", {"key": key})
+            asyncio.create_task(cache_del(key))
+            return {"detail": "queued"}
+        else:
+            # Se não existir, retornar 404
+            raise HTTPException(status_code=404, detail="Key not found")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
+        # Log do erro e retorno genérico
+        print(f"Erro ao deletar chave {key}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/cache/stats", status_code=status.HTTP_200_OK)

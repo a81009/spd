@@ -79,12 +79,29 @@ async def get_health():
 async def get_cache_stats():
     """Retorna estatísticas do cache Redis"""
     try:
+        # Obter informações de memória do Redis
+        redis_info = await _redis.info(section="memory")
+        memory_used = int(redis_info.get("used_memory", 0))
+        
+        # Obter contagem de chaves
+        keys_count = await _redis.dbsize()
+        
+        # Calcular taxa de acertos
+        hit_count = CACHE_HIT._value.get() 
+        miss_count = CACHE_MISS._value.get()
+        hit_rate = 0
+        if (hit_count + miss_count) > 0:
+            hit_rate = (hit_count / (hit_count + miss_count)) * 100
+        
+        # Montar o objeto de estatísticas
         stats = {
-            "keys_count": await _redis.dbsize(),
+            "keys_count": keys_count,
             "max_keys_limit": MAX_CACHE_KEYS,
-            "memory_used_bytes": await _redis.info("memory").get("used_memory", 0),
+            "memory_used_bytes": memory_used,
             "max_memory_bytes": MAX_CACHE_MEMORY_MB * 1024 * 1024,
-            "hit_rate": CACHE_HIT._value.get() / (CACHE_HIT._value.get() + CACHE_MISS._value.get()) * 100 if (CACHE_HIT._value.get() + CACHE_MISS._value.get()) > 0 else 0
+            "hit_rate": hit_rate,
+            "cache_hits": hit_count,
+            "cache_misses": miss_count
         }
         return stats
     except Exception as e:
