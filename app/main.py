@@ -1,5 +1,6 @@
 # app/main.py
 import asyncio
+import signal
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Body, status, Request, Response
@@ -39,6 +40,11 @@ app.mount("/metrics", metrics_app)
 class KVPair(BaseModel):
     data: Dict[str, Any]
 
+# Configurar fechamento adequado da conexão RabbitMQ quando a aplicação for encerrada
+@app.on_event("shutdown")
+async def shutdown_event():
+    await mq.close()
+    print("RabbitMQ connection closed")
 
 # ---------- ROTAS ----------
 @app.get("/kv", status_code=status.HTTP_200_OK)

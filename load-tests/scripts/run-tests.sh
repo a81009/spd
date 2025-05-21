@@ -1,638 +1,398 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env pwsh
+# PowerShell script equivalent to run-tests.sh
+# Set error action preference to stop on error
+$ErrorActionPreference = "Stop"
 
-# Diretórios
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEST_PLAN_DIR="${SCRIPT_DIR}/jmeter/test-plans"
-RESULTS_DIR="${SCRIPT_DIR}/jmeter/results"
-JMETER_LOG_DIR="${SCRIPT_DIR}/jmeter/logs"
-REPORT_DIR="${SCRIPT_DIR}/jmeter/reports"
+# ------------- directories -------------
+$SCRIPT_DIR = $PSScriptRoot
+$JMETER_ROOT = Join-Path $SCRIPT_DIR "jmeter"
+$TEST_PLAN_DIR = Join-Path $JMETER_ROOT "test-plans"
+$RESULTS_DIR = Join-Path $JMETER_ROOT "results"
+$LOG_DIR = Join-Path $JMETER_ROOT "logs"
+$REPORT_DIR = Join-Path $JMETER_ROOT "reports"
 
-# Encontrar JMeter
-check_jmeter() {
-    JMETER_CMD=$(which jmeter 2>/dev/null || echo "")
+# Create directories if they don't exist
+$null = New-Item -Path $TEST_PLAN_DIR, $RESULTS_DIR, $LOG_DIR, $REPORT_DIR -ItemType Directory -Force
+
+# ------------- locate JMeter -------------
+function Find-JMeter {
+    $jmeterPaths = @(
+        (Get-Command jmeter -ErrorAction SilentlyContinue).Source,
+        "C:\jmeter\bin\jmeter.bat",
+        "C:\apache-jmeter\bin\jmeter.bat",
+        "$env:USERPROFILE\jmeter\bin\jmeter.bat"
+    )
     
-    if [ -z "$JMETER_CMD" ]; then
-        for path in "/usr/bin/jmeter" "/usr/local/bin/jmeter" "/opt/jmeter/bin/jmeter" "$HOME/jmeter/bin/jmeter"; do
-            if [ -x "$path" ]; then
-                JMETER_CMD="$path"
-                break
-            fi
-        done
-    fi
-    
-    if [ -z "$JMETER_CMD" ]; then
-        echo "Apache JMeter não está instalado. Por favor, instale o JMeter primeiro."
-        echo "Você pode instalar via:"
-        echo "  1. Download direto: https://jmeter.apache.org/download_jmeter.cgi"
-        echo "  2. Ou usando package manager (exemplo Ubuntu/Debian):"
-        echo "     sudo apt-get update && sudo apt-get install jmeter"
-        exit 1
-    fi
-    
-    JMETER_VERSION=$("$JMETER_CMD" --version 2>/dev/null | head -n 1 || "$JMETER_CMD" -v 2>/dev/null | head -n 1)
-    
-    if [[ "$JMETER_VERSION" =~ 5\.|6\. ]]; then
-        IS_JMETER_5_PLUS=true
-    else
-        IS_JMETER_5_PLUS=false
-    fi
-    
-    export JMETER_CMD
-    export IS_JMETER_5_PLUS
+    foreach ($path in $jmeterPaths) {
+        if ($path -and (Test-Path $path)) {
+            return $path
+        }
+    }
+    return $null
 }
 
-# Criar diretórios necessários
-mkdir -p "$TEST_PLAN_DIR"
-mkdir -p "$RESULTS_DIR"
-mkdir -p "$JMETER_LOG_DIR"
-mkdir -p "$REPORT_DIR"
-chmod -R 777 "${SCRIPT_DIR}/jmeter"
-
-# Leitura com valores padrão
-read_input() {
-    local prompt=$1
-    local default=$2
-    local value
-    
-    read -p "${prompt} [${default}]: " value
-    echo ${value:-$default}
+$JMETER_CMD = Find-JMeter
+if (-not $JMETER_CMD) {
+    Write-Error "JMeter not found."
+    exit 1
 }
 
-# Verificar JMeter
-check_jmeter
+# ------------- parameter collection -------------
+function Read-Input {
+    param (
+        [string]$prompt,
+        [string]$default
+    )
+    
+    $response = Read-Host "$prompt [$default]"
+    if ([string]::IsNullOrEmpty($response)) {
+        return $default
+    }
+    return $response
+}
 
-# Leitura interativa dos parâmetros
-echo "===================================="
-echo "Configuração do Teste de Carga"
-echo "===================================="
+$USERS = Read-Input -prompt "Concurrent Users" -default "10"
+$RAMPUP = Read-Input -prompt "Ramp-up in seconds" -default "2"
+$DURATION = Read-Input -prompt "Test duration (s)" -default "60"
+$PUT_TPS = Read-Input -prompt "PUT ops/s" -default "50"
+$GET_TPS = Read-Input -prompt "GET ops/s (ignored, simple script)" -default "0"
+$DEL_TPS = Read-Input -prompt "DELETE ops/s (ignored, simple script)" -default "0"
+$TEST_NAME = Read-Input -prompt "Test name" -default "kv-store-test"
 
-HOST="localhost"
-PORT="80"
-USERS=$(read_input "Número de usuários concorrentes" "10")
-RAMPUP=$(read_input "Tempo de ramp-up (segundos)" "2")  # Reduced default ramp-up time
-DURATION=$(read_input "Duração do teste (segundos)" "60")
-PUT_THROUGHPUT=$(read_input "Taxa de operações PUT por segundo" "50")
-GET_THROUGHPUT=$(read_input "Taxa de operações GET por segundo" "200")
-DELETE_THROUGHPUT=$(read_input "Taxa de operações DELETE por segundo" "20")
-TEST_NAME=$(read_input "Nome do teste" "kv-store-test")
+# ------------- auxiliary calculations -------------
+$WARMUP = [math]::Max(1, [int]($DURATION / 4))
+$TIMESTAMP = Get-Date -Format "yyyyMMdd-HHmmss"
+$RESULT_BASE = Join-Path $RESULTS_DIR "$TEST_NAME-$TIMESTAMP"
+$RESULT_CSV = "$RESULT_BASE.csv"
+$LOG_FILE = Join-Path $LOG_DIR "$TEST_NAME-$TIMESTAMP.log"
+$REPORT_OUT = Join-Path $REPORT_DIR "$TEST_NAME-$TIMESTAMP"
+$JMX_FILE = Join-Path $TEST_PLAN_DIR "$TEST_NAME-$TIMESTAMP.jmx"
 
-# Calculate warm-up period - minimum 1 second, maximum 1/4 of test duration
-WARMUP_PERIOD=$(echo "scale=0; $DURATION / 4" | bc)
-if [ "$WARMUP_PERIOD" -lt 1 ]; then
-    WARMUP_PERIOD=1
-fi
+function To-Min {
+    param([int]$val)
+    return $val * 60
+}
 
-# Adicionar tempo extra ao tempo de execução para considerar o warm-up
-EXTENDED_DURATION=$((DURATION + WARMUP_PERIOD))
+$PUT_TPM = To-Min -val $PUT_TPS
+$GET_TPM = To-Min -val $GET_TPS
+$DEL_TPM = To-Min -val $DEL_TPS
 
-# Calcular throughput para todo o grupo, não por thread
-TOTAL_PUT_THROUGHPUT=$PUT_THROUGHPUT
-TOTAL_GET_THROUGHPUT=$GET_THROUGHPUT
-TOTAL_DELETE_THROUGHPUT=$DELETE_THROUGHPUT
+Write-Host "`n===== Parameters ====="
+Write-Host "Host.................: localhost"
+Write-Host "Port.................: 8000"
+Write-Host "Users................: $USERS"
+Write-Host "Ramp-up..............: $RAMPUP s"
+Write-Host "Duration.............: $DURATION s (+${WARMUP}s warm-up)"
+Write-Host "TPS (PUT/GET/DEL)....: $PUT_TPS / $GET_TPS / $DEL_TPS"
+Write-Host "JMX File.............: $JMX_FILE"
+Write-Host "CSV..................: $RESULT_CSV"
+Write-Host "HTML Report..........: $REPORT_OUT`n"
 
-# Carimbo de data/hora para o nome do arquivo
-TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
-RESULTS_FILE="${RESULTS_DIR}/${TEST_NAME}-${TIMESTAMP}"
-RESULTS_CSV="${RESULTS_FILE}.csv"
-LOG_FILE="${JMETER_LOG_DIR}/${TEST_NAME}-${TIMESTAMP}.log"
-SUMMARY_FILE="${RESULTS_DIR}/${TEST_NAME}-${TIMESTAMP}-summary.txt"
-REPORT_PATH="${REPORT_DIR}/${TEST_NAME}-${TIMESTAMP}"
-DETAILED_SUMMARY="${RESULTS_DIR}/${TEST_NAME}-${TIMESTAMP}-detailed.txt"
-
-# Exibir configurações finais
-echo "===================================="
-echo "Configurações do teste:"
-echo "===================================="
-echo "Host:               $HOST"
-echo "Porta:              $PORT"
-echo "Usuários:           $USERS"
-echo "Ramp-up:            $RAMPUP segundos"
-echo "Duração:            $DURATION segundos (+ $WARMUP_PERIOD segundos warm-up)"
-echo "Taxa PUT:           $TOTAL_PUT_THROUGHPUT/seg (total)"
-echo "Taxa GET:           $TOTAL_GET_THROUGHPUT/seg (total)"
-echo "Taxa DELETE:        $TOTAL_DELETE_THROUGHPUT/seg (total)"
-echo "Arquivo resultados: $RESULTS_CSV"
-echo "===================================="
-
-# Confirmar execução
-read -p "Deseja iniciar o teste com estas configurações? (s/N) " confirm
-if [[ ! $confirm =~ ^[Ss]$ ]]; then
-    echo "Teste cancelado pelo usuário."
+$confirmation = Read-Host "Confirm and start? (y/N)"
+if ($confirmation -inotmatch "^[yY]$") {
+    Write-Host "Canceled."
     exit 0
-fi
+}
 
-# Criar arquivo JMX
-TEST_PLAN_FILE="${TEST_PLAN_DIR}/kv-store-test-${TIMESTAMP}.jmx"
-
-if [ "$IS_JMETER_5_PLUS" = true ]; then
-    cat > "$TEST_PLAN_FILE" << EOL
+# ------------- generate JMX plan (JSR223PostProcessor with improved regex and sync) -------------
+$jmxContent = @"
 <?xml version="1.0" encoding="UTF-8"?>
-<jmeterTestPlan version="1.2" properties="5.0">
+<jmeterTestPlan version="1.4" properties="5.0">
   <hashTree>
-    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="KV Store Test">
-      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments">
-        <collectionProp name="Arguments.arguments"/>
-      </elementProp>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="KV Store Test - JSR223 Regex Fix">
       <boolProp name="TestPlan.functional_mode">false</boolProp>
-      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
       <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
-    </TestPlan>
-    <hashTree>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
-        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
-          <boolProp name="LoopController.continue_forever">false</boolProp>
-          <intProp name="LoopController.loops">-1</intProp>
-        </elementProp>
-        <stringProp name="ThreadGroup.num_threads">${__P(users,10)}</stringProp>
-        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,2)}</stringProp>
-        <boolProp name="ThreadGroup.scheduler">true</boolProp>
-        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
-        <stringProp name="ThreadGroup.duration">${__P(duration,60)}</stringProp>
-        <stringProp name="ThreadGroup.delay">0</stringProp>
-        <boolProp name="ThreadGroup.delayedStart">false</boolProp>
-      </ThreadGroup>
-      <hashTree>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="PUT Request">
-          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
-          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
-            <collectionProp name="Arguments.arguments">
-              <elementProp name="" elementType="HTTPArgument">
-                <boolProp name="HTTPArgument.always_encode">false</boolProp>
-                <stringProp name="Argument.value">{"data":{"key":"test-${__UUID}","value":"value-${__Random(1,10000)}"}}</stringProp>
-                <stringProp name="Argument.metadata">=</stringProp>
-              </elementProp>
-            </collectionProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="GET_SCRIPT_SIMPLE" elementType="Argument">
+            <stringProp name="Argument.name">GET_SCRIPT_SIMPLE</stringProp>
+            <stringProp name="Argument.value">return "fixed_get_key_for_debug";</stringProp>
+            <stringProp name="Argument.desc">Groovy script SIMPLIFICADO for GET key</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
           </elementProp>
-          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
-          <stringProp name="HTTPSampler.protocol">http</stringProp>
-          <stringProp name="HTTPSampler.path">/kv</stringProp>
-          <stringProp name="HTTPSampler.method">PUT</stringProp>
-          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
-          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
-          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
-          <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
-        </HTTPSamplerProxy>
-        <hashTree>
-          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Content-Type Header">
-            <collectionProp name="HeaderManager.headers">
-              <elementProp name="" elementType="Header">
-                <stringProp name="Header.name">Content-Type</stringProp>
-                <stringProp name="Header.value">application/json</stringProp>
-              </elementProp>
-            </collectionProp>
-          </HeaderManager>
-          <hashTree/>
-          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="PUT Throughput">
-            <stringProp name="ConstantThroughputTimer.throughput">${__P(put_throughput,50.0)}</stringProp>
-            <intProp name="calcMode">1</intProp>
-          </ConstantThroughputTimer>
-          <hashTree/>
-          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Store Keys for GET">
-            <stringProp name="scriptLanguage">groovy</stringProp>
-            <stringProp name="parameters"></stringProp>
-            <stringProp name="filename"></stringProp>
-            <stringProp name="cacheKey">true</stringProp>
-            <stringProp name="script">import org.apache.jmeter.util.JMeterUtils;
-import java.util.ArrayList;
-
-// Extract the key from the request
-String requestBody = prev.getRequestData();
-String keyPattern = &quot;key\&quot;:\\s*\&quot;([^\&quot;]+)\&quot;&quot;;
-java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(keyPattern);
-java.util.regex.Matcher matcher = pattern.matcher(requestBody);
-
-if (matcher.find()) {
-    String key = matcher.group(1);
-    
-    // Get the shared key list, or create it if it doesn&apos;t exist
-    ArrayList&lt;String&gt; keyList = props.get(&quot;keyList&quot;);
-    if (keyList == null) {
-        keyList = new ArrayList&lt;String&gt;();
-        props.put(&quot;keyList&quot;, keyList);
-    }
-    
-    // Add the key to the list
-    keyList.add(key);
-    
-    // Keep the list at a reasonable size
-    if (keyList.size() &gt; 1000) {
-        keyList.remove(0);
-    }
-}</stringProp>
-          </JSR223PostProcessor>
-          <hashTree/>
-        </hashTree>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET Request">
-          <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments">
-            <collectionProp name="Arguments.arguments">
-              <elementProp name="key" elementType="HTTPArgument">
-                <boolProp name="HTTPArgument.always_encode">false</boolProp>
-                <stringProp name="Argument.value">${__groovy(
-                  def keys = props.get("keyList");
-                  if (keys != null && !keys.isEmpty()) {
-                    return keys.get(new Random().nextInt(keys.size()));
-                  } else {
-                    return "hello";
-                  }
-                )}</stringProp>
-                <stringProp name="Argument.metadata">=</stringProp>
-                <boolProp name="HTTPArgument.use_equals">true</boolProp>
-                <stringProp name="Argument.name">key</stringProp>
-              </elementProp>
-            </collectionProp>
+          <elementProp name="DEL_SCRIPT_SIMPLE" elementType="Argument">
+            <stringProp name="Argument.name">DEL_SCRIPT_SIMPLE</stringProp>
+            <stringProp name="Argument.value">return "fixed_del_key_for_debug";</stringProp>
+            <stringProp name="Argument.desc">Groovy script SIMPLIFICADO for DELETE key</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
           </elementProp>
-          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
-          <stringProp name="HTTPSampler.protocol">http</stringProp>
-          <stringProp name="HTTPSampler.path">/kv</stringProp>
-          <stringProp name="HTTPSampler.method">GET</stringProp>
-          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
-          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
-          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
-          <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
-        </HTTPSamplerProxy>
-        <hashTree>
-          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="GET Throughput">
-            <stringProp name="ConstantThroughputTimer.throughput">${__P(get_throughput,200.0)}</stringProp>
-            <intProp name="calcMode">1</intProp>
-          </ConstantThroughputTimer>
-          <hashTree/>
-        </hashTree>
-      </hashTree>
-      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="Summary Report">
-        <boolProp name="ResultCollector.error_logging">false</boolProp>
-        <objProp>
-          <n>saveConfig</n>
-          <value class="SampleSaveConfiguration">
-            <time>true</time>
-            <latency>true</latency>
-            <timestamp>true</timestamp>
-            <success>true</success>
-            <label>true</label>
-            <code>true</code>
-            <message>true</message>
-            <threadName>true</threadName>
-            <dataType>true</dataType>
-            <encoding>false</encoding>
-            <assertions>false</assertions>
-            <subresults>false</subresults>
-            <responseData>false</responseData>
-            <samplerData>false</samplerData>
-            <xml>false</xml>
-            <fieldNames>true</fieldNames>
-            <responseHeaders>false</responseHeaders>
-            <requestHeaders>false</requestHeaders>
-            <responseDataOnError>false</responseDataOnError>
-            <saveAssertionResultsFailureMessage>false</saveAssertionResultsFailureMessage>
-            <assertionsResultsToSave>0</assertionsResultsToSave>
-            <bytes>true</bytes>
-            <sentBytes>true</sentBytes>
-            <url>true</url>
-            <threadCounts>true</threadCounts>
-            <idleTime>true</idleTime>
-            <connectTime>true</connectTime>
-          </value>
-        </objProp>
-        <stringProp name="filename">${__P(summary_file,summary.txt)}</stringProp>
-      </ResultCollector>
-      <hashTree/>
-      <ResultCollector guiclass="StatVisualizer" testclass="ResultCollector" testname="Aggregate Report">
-        <boolProp name="ResultCollector.error_logging">false</boolProp>
-        <objProp>
-          <n>saveConfig</n>
-          <value class="SampleSaveConfiguration">
-            <time>true</time>
-            <latency>true</latency>
-            <timestamp>true</timestamp>
-            <success>true</success>
-            <label>true</label>
-            <code>true</code>
-            <message>true</message>
-            <threadName>true</threadName>
-            <dataType>true</dataType>
-            <encoding>false</encoding>
-            <assertions>false</assertions>
-            <subresults>false</subresults>
-            <responseData>false</responseData>
-            <samplerData>false</samplerData>
-            <xml>false</xml>
-            <fieldNames>true</fieldNames>
-            <responseHeaders>false</responseHeaders>
-            <requestHeaders>false</requestHeaders>
-            <responseDataOnError>false</responseDataOnError>
-            <saveAssertionResultsFailureMessage>false</saveAssertionResultsFailureMessage>
-            <assertionsResultsToSave>0</assertionsResultsToSave>
-            <bytes>true</bytes>
-            <sentBytes>true</sentBytes>
-            <url>true</url>
-            <threadCounts>true</threadCounts>
-            <idleTime>true</idleTime>
-            <connectTime>true</connectTime>
-          </value>
-        </objProp>
-        <stringProp name="filename">${__P(detailed_file,detailed.txt)}</stringProp>
-      </ResultCollector>
-      <hashTree/>
-    </hashTree>
-  </hashTree>
-</jmeterTestPlan>
-EOL
-else
-    cat > "$TEST_PLAN_FILE" << EOL
-<?xml version="1.0" encoding="UTF-8"?>
-<jmeterTestPlan version="1.2" properties="2.1">
-  <hashTree>
-    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="KV Store Test">
-      <stringProp name="TestPlan.comments"></stringProp>
-      <boolProp name="TestPlan.functional_mode">false</boolProp>
-      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
-      <stringProp name="TestPlan.user_define_classpath"></stringProp>
-      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
-        <collectionProp name="Arguments.arguments"/>
+        </collectionProp>
       </elementProp>
     </TestPlan>
     <hashTree>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Thread Group">
-        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
-        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller">
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Threads">
+        <stringProp name="ThreadGroup.num_threads">$USERS</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">$RAMPUP</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">$DURATION</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController">
           <boolProp name="LoopController.continue_forever">false</boolProp>
           <stringProp name="LoopController.loops">-1</stringProp>
         </elementProp>
-        <stringProp name="ThreadGroup.num_threads">${__P(users,10)}</stringProp>
-        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,2)}</stringProp>
-        <boolProp name="ThreadGroup.scheduler">true</boolProp>
-        <stringProp name="ThreadGroup.duration">${__P(duration,60)}</stringProp>
-        <stringProp name="ThreadGroup.delay">0</stringProp>
       </ThreadGroup>
       <hashTree>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="PUT Request">
+
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="PUT">
           <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
           <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
             <collectionProp name="Arguments.arguments">
-              <elementProp name="" elementType="HTTPArgument">
+              <elementProp name="body" elementType="HTTPArgument">
                 <boolProp name="HTTPArgument.always_encode">false</boolProp>
-                <stringProp name="Argument.value">{"data":{"key":"test-${__time()}","value":"value-${__Random(1,10000)}"}}</stringProp>
+                <stringProp name="Argument.value">{ "data": { "key": "k-\${__UUID}", "value": "v-\${__Random(1,9999)}" } }</stringProp>
                 <stringProp name="Argument.metadata">=</stringProp>
               </elementProp>
             </collectionProp>
           </elementProp>
-          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
-          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <stringProp name="HTTPSampler.domain">localhost</stringProp>
+          <stringProp name="HTTPSampler.port">8000</stringProp>
           <stringProp name="HTTPSampler.path">/kv</stringProp>
           <stringProp name="HTTPSampler.method">PUT</stringProp>
-          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
-          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
-          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
-          <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
         </HTTPSamplerProxy>
         <hashTree>
-          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Content-Type Header">
+          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="CT-PUT">
             <collectionProp name="HeaderManager.headers">
-              <elementProp name="" elementType="Header">
+              <elementProp name="h1" elementType="Header">
                 <stringProp name="Header.name">Content-Type</stringProp>
                 <stringProp name="Header.value">application/json</stringProp>
               </elementProp>
             </collectionProp>
           </HeaderManager>
           <hashTree/>
-          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="PUT Throughput">
-            <stringProp name="ConstantThroughputTimer.throughput">${__P(put_throughput,50.0)}</stringProp>
+          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="PUT TPS">
+            <stringProp name="throughput">$PUT_TPM</stringProp>
             <intProp name="calcMode">1</intProp>
           </ConstantThroughputTimer>
           <hashTree/>
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Store keys">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="script">log.info("JSR223 Store keys: START thread: " + Thread.currentThread().getName());
+
+// Obter o corpo do request diretamente do samplerData
+String samplerData = prev.getSamplerData();
+String requestBody = "";
+
+if (samplerData != null && !samplerData.isEmpty()) {
+    // Extrair apenas o corpo JSON do samplerData (após a linha em branco que separa cabeçalhos do corpo)
+    int bodyStart = samplerData.indexOf("\n\n");
+    if (bodyStart > 0) {
+        requestBody = samplerData.substring(bodyStart).trim();
+    } else {
+        requestBody = samplerData;
+    }
+}
+
+if (requestBody == null || requestBody.isEmpty()) {
+    log.error("JSR223 Store keys: Request Body is NULL or EMPTY for thread " + Thread.currentThread().getName() + "!");
+    return;
+}
+log.info("JSR223 Store keys: Request Body for thread " + Thread.currentThread().getName() + ": [" + requestBody + "]");
+
+// Regex mais específica para um valor de chave JSON entre aspas
+java.util.regex.Matcher matcher = (requestBody =~ /"key"\s*:\s*"([^"]+)"/);
+
+if (matcher.find()) {
+    String newKey = matcher.group(1);
+    log.info("JSR223 Store keys: Regex matched for thread " + Thread.currentThread().getName() + ". Key extracted: [" + newKey + "]");
+    
+    if (newKey == null || newKey.trim().isEmpty()) {
+        log.warn("JSR223 Store keys: Extracted newKey is NULL or EMPTY for thread " + Thread.currentThread().getName() + " from Request Body: [" + requestBody + "]");
+    } else {
+        String keyToAdd = newKey.trim();
+        synchronized(props) {
+            String currentKeysInProps = props.get('keys');
+            if (currentKeysInProps == null) {
+                currentKeysInProps = "";
+                props.put('keys', ""); 
+            }
+            String updatedKeys = currentKeysInProps + keyToAdd + ',';
+            props.put('keys', updatedKeys);
+            log.info("JSR223 Store keys: Updated 'keys' prop by thread " + Thread.currentThread().getName() + ". Current keys: [" + updatedKeys + "]");
+        }
+    }
+} else {
+    log.warn("JSR223 Store keys: Regex did NOT find key for thread " + Thread.currentThread().getName() + ". Request Body: [" + requestBody + "]");
+}
+log.info("JSR223 Store keys: END thread: " + Thread.currentThread().getName());</stringProp>
+          </JSR223PostProcessor>
+          <hashTree/>
         </hashTree>
-        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET Request">
-          <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET">
+          <stringProp name="HTTPSampler.domain">localhost</stringProp>
+          <stringProp name="HTTPSampler.port">8000</stringProp>
+          <stringProp name="HTTPSampler.path">/kv</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
             <collectionProp name="Arguments.arguments">
               <elementProp name="key" elementType="HTTPArgument">
                 <boolProp name="HTTPArgument.always_encode">false</boolProp>
-                <stringProp name="Argument.value">hello</stringProp>
+                <stringProp name="Argument.value">\${__groovy(\${GET_SCRIPT_SIMPLE})}</stringProp>
                 <stringProp name="Argument.metadata">=</stringProp>
-                <boolProp name="HTTPArgument.use_equals">true</boolProp>
                 <stringProp name="Argument.name">key</stringProp>
               </elementProp>
             </collectionProp>
           </elementProp>
-          <stringProp name="HTTPSampler.domain">${__P(host,localhost)}</stringProp>
-          <stringProp name="HTTPSampler.port">${__P(port,80)}</stringProp>
-          <stringProp name="HTTPSampler.protocol">http</stringProp>
-          <stringProp name="HTTPSampler.path">/kv</stringProp>
-          <stringProp name="HTTPSampler.method">GET</stringProp>
-          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
-          <boolProp name="HTTPSampler.auto_redirects">false</boolProp>
-          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
-          <boolProp name="HTTPSampler.DO_MULTIPART_POST">false</boolProp>
         </HTTPSamplerProxy>
         <hashTree>
-          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="GET Throughput">
-            <stringProp name="ConstantThroughputTimer.throughput">${__P(get_throughput,200.0)}</stringProp>
+          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="GET TPS">
+            <stringProp name="throughput">$GET_TPM</stringProp>
             <intProp name="calcMode">1</intProp>
           </ConstantThroughputTimer>
           <hashTree/>
         </hashTree>
+
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="DELETE">
+          <stringProp name="HTTPSampler.domain">localhost</stringProp>
+          <stringProp name="HTTPSampler.port">8000</stringProp>
+          <stringProp name="HTTPSampler.path">/kv</stringProp>
+          <stringProp name="HTTPSampler.method">DELETE</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="key" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">\${__groovy(\${DEL_SCRIPT_SIMPLE})}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+                <stringProp name="Argument.name">key</stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <ConstantThroughputTimer guiclass="ConstantThroughputTimerGui" testclass="ConstantThroughputTimer" testname="DEL TPS">
+            <stringProp name="throughput">$DEL_TPM</stringProp>
+            <intProp name="calcMode">1</intProp>
+          </ConstantThroughputTimer>
+          <hashTree/>
+        </hashTree>
+
       </hashTree>
-      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="Summary Report">
+
+      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="CSV">
+        <stringProp name="filename">$RESULT_CSV</stringProp>
         <boolProp name="ResultCollector.error_logging">false</boolProp>
         <objProp>
-          <n>saveConfig</n>
-          <value class="SampleSaveConfiguration">
-            <time>true</time>
-            <latency>true</latency>
-            <timestamp>true</timestamp>
-            <success>true</success>
-            <label>true</label>
-            <code>true</code>
-            <message>true</message>
-            <threadName>true</threadName>
-            <dataType>true</dataType>
-            <encoding>false</encoding>
-            <assertions>false</assertions>
-            <subresults>false</subresults>
-            <responseData>false</responseData>
-            <samplerData>false</samplerData>
-            <xml>false</xml>
-            <fieldNames>true</fieldNames>
-            <responseHeaders>false</responseHeaders>
-            <requestHeaders>false</requestHeaders>
-            <responseDataOnError>false</responseDataOnError>
-            <saveAssertionResultsFailureMessage>false</saveAssertionResultsFailureMessage>
-            <assertionsResultsToSave>0</assertionsResultsToSave>
-            <bytes>true</bytes>
-            <sentBytes>true</sentBytes>
-            <url>true</url>
-            <threadCounts>true</threadCounts>
-            <idleTime>true</idleTime>
-            <connectTime>true</connectTime>
-          </value>
+            <name>saveConfig</name>
+            <value class="SampleSaveConfiguration">
+              <time>true</time><latency>true</latency><timestamp>true</timestamp><success>true</success><label>true</label><code>true</code><message>true</message><threadName>true</threadName><dataType>true</dataType><encoding>false</encoding><assertions>true</assertions><subresults>true</subresults><responseData>false</responseData><samplerData>false</samplerData><xml>false</xml><fieldNames>true</fieldNames><responseHeaders>false</responseHeaders><requestHeaders>false</requestHeaders><responseDataOnError>false</responseDataOnError><saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage><assertionsResultsToSave>0</assertionsResultsToSave><bytes>true</bytes><sentBytes>true</sentBytes><url>true</url><threadCounts>true</threadCounts><idleTime>true</idleTime><connectTime>true</connectTime>
+            </value>
         </objProp>
-        <stringProp name="filename">${__P(summary_file,summary.txt)}</stringProp>
+        <stringProp name="TestPlan.comments">Full CSV output</stringProp>
       </ResultCollector>
       <hashTree/>
     </hashTree>
   </hashTree>
 </jmeterTestPlan>
-EOL
-fi
+"@
 
-echo "===================================="
-echo "Executando teste de carga..."
-echo "===================================="
+Set-Content -Path $JMX_FILE -Value $jmxContent -Encoding UTF8
 
-# Configurar JMeter
-export JVM_ARGS="-Djava.io.tmpdir=$JMETER_LOG_DIR -Djava.awt.headless=true"
-touch "$RESULTS_CSV"
-chmod 777 "$RESULTS_CSV"
-touch "$SUMMARY_FILE"
-chmod 777 "$SUMMARY_FILE"
-touch "$DETAILED_SUMMARY"
-chmod 777 "$DETAILED_SUMMARY"
+# ------------- execute -------------
+$TIMEOUT = $DURATION + $WARMUP + 30
+Write-Host "`nStarting JMeter... (timeout ${TIMEOUT}s)`n"
 
-# Executar JMeter com uma margem de segurança razoável para o timeout
-TIMEOUT_MARGIN=60
-if [ $DURATION -lt 30 ]; then
-    # Para testes curtos, adicionar uma margem menor
-    TIMEOUT_MARGIN=30
-fi
+# Command to run JMeter
+$jmeterCommand = @(
+    $JMETER_CMD,
+    "--nongui",
+    "--testfile", "`"$JMX_FILE`"",
+    "--jmeterlogfile", "`"$LOG_FILE`"",
+    "-l", "`"$RESULT_CSV`"",
+    "--reportatendofloadtests",
+    "--reportoutputfolder", "`"$REPORT_OUT`"",
+    "-Jjmeter.save.saveservice.output_format=csv",
+    "-Jjmeter.save.saveservice.bytes=true",
+    "-Jjmeter.save.saveservice.latency=true",
+    "-Jjmeter.save.saveservice.connect_time=true",
+    "-Jjmeter.save.saveservice.timestamp_format=`"yyyy/MM/dd HH:mm:ss.SSS`"",
+    "-Jjmeter.save.saveservice.default_delimiter=,",
+    "-Jjmeter.save.saveservice.print_field_names=true"
+)
 
-echo "Iniciando teste com duração de $DURATION segundos..."
-echo "O teste terminará automaticamente após este período."
+# Run JMeter with timeout
+$jmeterProcess = Start-Process -FilePath $jmeterCommand[0] -ArgumentList $jmeterCommand[1..($jmeterCommand.Length-1)] -NoNewWindow -PassThru
+$jmeterTimeout = $false
 
-if [ "$IS_JMETER_5_PLUS" = true ]; then
-    "$JMETER_CMD" --nongui \
-           --testfile "$TEST_PLAN_FILE" \
-           --logfile "$LOG_FILE" \
-           --jmeterlogfile "$JMETER_LOG_DIR/jmeter.log" \
-           -Jhost="$HOST" \
-           -Jport="$PORT" \
-           -Jusers="$USERS" \
-           -Jrampup="$RAMPUP" \
-           -Jduration="$DURATION" \
-           -Jput_throughput="$TOTAL_PUT_THROUGHPUT" \
-           -Jget_throughput="$TOTAL_GET_THROUGHPUT" \
-           -Jsummary_file="$SUMMARY_FILE" \
-           -Jdetailed_file="$DETAILED_SUMMARY" \
-           --reportatendofloadtests \
-           --reportoutputfolder "$REPORT_PATH" \
-           -l "$RESULTS_CSV"
-else
-    "$JMETER_CMD" -n -t "$TEST_PLAN_FILE" \
-           -Jhost="$HOST" \
-           -Jport="$PORT" \
-           -Jusers="$USERS" \
-           -Jrampup="$RAMPUP" \
-           -Jduration="$DURATION" \
-           -Jput_throughput="$TOTAL_PUT_THROUGHPUT" \
-           -Jget_throughput="$TOTAL_GET_THROUGHPUT" \
-           -Jsummary_file="$SUMMARY_FILE" \
-           -l "$RESULTS_CSV" > "$LOG_FILE" 2>&1
-fi
+# Wait for the process to exit or timeout
+if (-not (Wait-Process -InputObject $jmeterProcess -Timeout $TIMEOUT -ErrorAction SilentlyContinue)) {
+    Write-Host "JMeter timeout after ${TIMEOUT}s"
+    Stop-Process -InputObject $jmeterProcess -Force
+    $jmeterTimeout = $true
+}
 
-JMETER_EXIT_CODE=$?
-
-if [ $JMETER_EXIT_CODE -eq 0 ]; then
-    echo "===================================="
-    echo "Teste concluído com sucesso!"
-    echo "===================================="
-elif [ $JMETER_EXIT_CODE -eq 124 ] || [ $JMETER_EXIT_CODE -eq 143 ]; then
-    echo "===================================="
-    echo "Teste interrompido pelo timeout - provavelmente concluído com sucesso."
-    echo "===================================="
-else
-    echo "===================================="
-    echo "ERRO: Teste falhou com código $JMETER_EXIT_CODE"
-    echo "Verifique o log: $LOG_FILE"
-    echo "===================================="
+if ($jmeterProcess.ExitCode -ne 0 -and -not $jmeterTimeout) {
+    Write-Host "JMeter returned error $($jmeterProcess.ExitCode) - see $LOG_FILE"
     exit 1
-fi
+}
 
-# Verificar resultados
-if [ -f "$RESULTS_CSV" ] && [ -s "$RESULTS_CSV" ]; then
-    echo "Arquivo de resultados: $RESULTS_CSV"
+# ------------- quick metrics -------------
+if (-not (Test-Path $RESULT_CSV) -or (Get-Item $RESULT_CSV).Length -eq 0) {
+    Write-Host "Empty CSV - check the log."
+    exit 1
+}
+
+$totalLines = (Get-Content $RESULT_CSV | Measure-Object -Line).Lines
+if ($totalLines -le 1) {
+    Write-Host "CSV does not contain sample data - check log: $LOG_FILE and report: $REPORT_OUT"
+    if ((Get-Content $LOG_FILE -Raw) -match 'Starting standalone test' -and ((Get-Content $LOG_FILE -Raw) -notmatch 'Tidying up')) {
+        Write-Host "Warning: The test may have been prematurely interrupted."
+    }
+    elseif ((Get-Content $LOG_FILE -Raw) -match 'Error occurred compiling the tree') {
+        Write-Host "Error in JMX compilation, CSV may be empty."
+    }
+    # Just continue to summary even if CSV is empty
+}
+
+$total = $totalLines - 1
+if ($total -lt 0) { $total = 0 }
+
+$ok = (Select-String -Path $RESULT_CSV -Pattern ',true,' -AllMatches).Matches.Count
+$fail = $total - $ok
+
+function Get-Percentage {
+    param (
+        [int]$numerator,
+        [int]$denominator
+    )
     
-    # Gerar relatório de métricas
-    echo "===================================="
-    echo "RELATÓRIO DE MÉTRICAS DO TESTE"
-    echo "===================================="
-    
-    # Total de solicitações
-    TOTAL_REQUESTS=$(grep -c "^" "$RESULTS_CSV" 2>/dev/null || echo "0")
-    echo "Total de solicitações: $TOTAL_REQUESTS"
-    
-    # Solicitações bem-sucedidas
-    SUCCESS_REQUESTS=$(grep -c ",true," "$RESULTS_CSV" 2>/dev/null || echo "0")
-    FAIL_REQUESTS=$((TOTAL_REQUESTS - SUCCESS_REQUESTS))
-    if [ "$TOTAL_REQUESTS" -gt 0 ]; then
-        SUCCESS_RATE=$(echo "scale=2; ($SUCCESS_REQUESTS * 100) / $TOTAL_REQUESTS" | bc 2>/dev/null || echo "N/A")
-    else
-        SUCCESS_RATE="N/A"
-    fi
-    echo "Solicitações bem-sucedidas: $SUCCESS_REQUESTS ($SUCCESS_RATE%)"
-    echo "Solicitações falhas: $FAIL_REQUESTS"
-    
-    # Tipos de solicitações
-    PUT_REQUESTS=$(grep -c "PUT Request" "$RESULTS_CSV" 2>/dev/null || echo "0")
-    GET_REQUESTS=$(grep -c "GET Request" "$RESULTS_CSV" 2>/dev/null || echo "0")
-    echo "PUT Requests: $PUT_REQUESTS"
-    echo "GET Requests: $GET_REQUESTS"
-    
-    # Tempo médio de resposta
-    AVG_RESP_TIME=$(awk -F, 'NR>1 {sum+=$2; count++} END {print sum/count}' "$RESULTS_CSV" 2>/dev/null || echo "N/A")
-    echo "Tempo médio de resposta: ${AVG_RESP_TIME}ms"
-    
-    # Extrair taxas reais de transação
-    if [ "$TOTAL_REQUESTS" -gt 0 ] && [ "$DURATION" -gt 0 ]; then
-        ACTUAL_TPS=$(echo "scale=2; $TOTAL_REQUESTS / $DURATION" | bc 2>/dev/null || echo "N/A")
-        ACTUAL_PUT_TPS=$(echo "scale=2; $PUT_REQUESTS / $DURATION" | bc 2>/dev/null || echo "N/A")
-        ACTUAL_GET_TPS=$(echo "scale=2; $GET_REQUESTS / $DURATION" | bc 2>/dev/null || echo "N/A")
-        
-        echo "Taxa média de transações: ${ACTUAL_TPS}/segundo"
-        echo "Taxa média de PUT: ${ACTUAL_PUT_TPS}/segundo (meta: ${TOTAL_PUT_THROUGHPUT}/segundo)"
-        echo "Taxa média de GET: ${ACTUAL_GET_TPS}/segundo (meta: ${TOTAL_GET_THROUGHPUT}/segundo)"
-    fi
-    
-    # Análise da distribuição do tempo de resposta
-    echo "===================================="
-    echo "DISTRIBUIÇÃO DO TEMPO DE RESPOSTA"
-    echo "===================================="
-    # Usar percentis se disponíveis ou calcular manualmente
-    awk -F, 'NR>1 {print $2}' "$RESULTS_CSV" | sort -n | awk '
-      BEGIN {count=0}
-      {values[count++]=$1}
-      END {
-        if (count > 0) {
-          print "Mínimo (ms): " values[0];
-          print "Máximo (ms): " values[count-1];
-          print "Mediana (ms): " values[int(count/2)];
-          print "90º Percentil (ms): " values[int(count*0.9)];
-          print "95º Percentil (ms): " values[int(count*0.95)];
-          print "99º Percentil (ms): " values[int(count*0.99)];
-        }
-      }' 2>/dev/null || echo "Não foi possível calcular a distribuição do tempo de resposta."
-    
-    # Análise da taxa de transações ao longo do tempo (para verificar consistência)
-    echo "===================================="
-    echo "TAXA DE TRANSAÇÕES POR INTERVALO"
-    echo "===================================="
-    INTERVAL=5 # Intervalo em segundos
-    awk -F, -v interval=$INTERVAL '
-      NR>1 {
-        ts = $1/1000;  # Timestamp em segundos
-        bucket = int(ts/interval) * interval;
-        count[bucket]++;
-      }
-      END {
-        print "Intervalo de tempo (s) | Transações | Taxa (tx/s)";
-        for (b in count) {
-          printf "%d-%d | %d | %.2f\n", b, b+interval, count[b], count[b]/interval;
-        }
-      }' "$RESULTS_CSV" | sort -n 2>/dev/null || echo "Não foi possível calcular a taxa de transações por intervalo."
-    
-    echo "===================================="
-    echo "Relatório detalhado disponível em: $REPORT_PATH"
-    echo "===================================="
-else
-    echo "AVISO: Arquivo de resultados não foi criado ou está vazio."
-fi
+    if ($denominator -eq 0) {
+        return "0.00"
+    }
+    else {
+        return [math]::Round(100 * $numerator / $denominator, 2).ToString("0.00")
+    }
+}
+
+# Calculate average latency
+$avgLatency = "0.00"
+if ($totalLines -gt 1) {
+    $latencyValues = @()
+    $csvData = Import-Csv $RESULT_CSV
+    foreach ($row in $csvData) {
+        $latencyValues += [double]$row.Latency
+    }
+    if ($latencyValues.Count -gt 0) {
+        $avgLatency = [math]::Round(($latencyValues | Measure-Object -Average).Average, 2).ToString("0.00")
+    }
+}
+
+# Count test types
+$putCount = (Select-String -Path $RESULT_CSV -Pattern '(,PUT,|,PUT\s*,)' -AllMatches).Matches.Count
+$getCount = (Select-String -Path $RESULT_CSV -Pattern '(,GET,|,GET\s*,)' -AllMatches).Matches.Count
+$deleteCount = (Select-String -Path $RESULT_CSV -Pattern '(,DELETE,|,DELETE\s*,)' -AllMatches).Matches.Count
+
+Write-Host "`n===== Summary ====="
+Write-Host "Total samples.......: $total"
+Write-Host "Success..............: $ok ($(Get-Percentage -numerator $ok -denominator $total)%)"
+Write-Host "Failures.............: $fail"
+Write-Host "PUT..................: $putCount"
+Write-Host "GET..................: $getCount"
+Write-Host "DELETE...............: $deleteCount"
+Write-Host "Average latency......: $avgLatency ms"
+Write-Host ""
+Write-Host "HTML Report in.......: $REPORT_OUT/index.html"
+Write-Host "JMeter Log...........: $LOG_FILE"
+Write-Host "CSV Results..........: $RESULT_CSV"
+Write-Host ""

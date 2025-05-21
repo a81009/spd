@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Key-Value Store API Interface</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .card {
+            background-color: white;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .operation-title {
+            color: #444;
+            margin-top: 0;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .response {
+            min-height: 50px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            white-space: pre-wrap;
+            margin-top: 10px;
+        }
+        .put-button { background-color: #2196F3; }
+        .put-button:hover { background-color: #0b7dda; }
+        .get-button { background-color: #4CAF50; }
+        .get-button:hover { background-color: #45a049; }
+        .delete-button { background-color: #f44336; }
+        .delete-button:hover { background-color: #d32f2f; }
+        .analyze-button { background-color: #ff9800; }
+        .analyze-button:hover { background-color: #e68a00; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .metric-card {
+            display: inline-block;
+            width: calc(25% - 15px);
+            margin-right: 15px;
+            margin-bottom: 15px;
+            text-align: center;
+            padding: 15px 0;
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .metric-card:last-child {
+            margin-right: 0;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+        .metric-label {
+            color: #666;
+            font-size: 14px;
+        }
+        .chart-container {
+            height: 300px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Key-Value Store API Interface</h1>
+    
+    <!-- PUT Operation -->
+    <div class="card">
+        <h2 class="operation-title">Add or Update Key-Value</h2>
+        <div class="form-group">
+            <label for="putKey">Key:</label>
+            <input type="text" id="putKey" placeholder="Enter key">
+        </div>
+        <div class="form-group">
+            <label for="putValue">Value:</label>
+            <input type="text" id="putValue" placeholder="Enter value">
+        </div>
+        <button class="put-button" onclick="putKeyValue()">PUT</button>
+        <div class="response" id="putResponse">Response will appear here...</div>
+    </div>
+    
+    <!-- GET Operation -->
+    <div class="card">
+        <h2 class="operation-title">Get Value by Key</h2>
+        <div class="form-group">
+            <label for="getKey">Key:</label>
+            <input type="text" id="getKey" placeholder="Enter key">
+        </div>
+        <button class="get-button" onclick="getKeyValue()">GET</button>
+        <div class="response" id="getResponse">Response will appear here...</div>
+    </div>
+    
+    <!-- DELETE Operation -->
+    <div class="card">
+        <h2 class="operation-title">Delete Key-Value</h2>
+        <div class="form-group">
+            <label for="deleteKey">Key:</label>
+            <input type="text" id="deleteKey" placeholder="Enter key">
+        </div>
+        <button class="delete-button" onclick="deleteKeyValue()">DELETE</button>
+        <div class="response" id="deleteResponse">Response will appear here...</div>
+    </div>
+
+    <!-- Test Results Analyzer -->
+    <div class="card">
+        <h2 class="operation-title">Test Results Analyzer</h2>
+        <div class="form-group">
+            <label for="resultFile">Upload JMeter CSV Result File:</label>
+            <input type="file" id="resultFile" accept=".csv">
+        </div>
+        <button class="analyze-button" onclick="analyzeResults()">Analyze Results</button>
+        
+        <div id="resultsContainer" style="display: none; margin-top: 20px;">
+            <h3>Test Summary</h3>
+            <div id="metrics"></div>
+            
+            <h3>Response Time Distribution</h3>
+            <div class="chart-container">
+                <canvas id="responseTimeChart"></canvas>
+            </div>
+            
+            <h3>Request Types</h3>
+            <div class="chart-container">
+                <canvas id="requestTypesChart"></canvas>
+            </div>
+            
+            <h3>Status Codes</h3>
+            <div class="chart-container">
+                <canvas id="statusCodesChart"></canvas>
+            </div>
+            
+            <h3>Detailed Results</h3>
+            <table id="resultsTable">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Request Type</th>
+                        <th>Response Time (ms)</th>
+                        <th>Status Code</th>
+                        <th>Status</th>
+                        <th>Success</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // API endpoint (adjust if needed)
+        const API_URL = 'http://localhost/kv';
+        
+        // PUT operation
+        async function putKeyValue() {
+            const key = document.getElementById('putKey').value.trim();
+            const value = document.getElementById('putValue').value.trim();
+            const responseElement = document.getElementById('putResponse');
+            
+            if (!key || !value) {
+                responseElement.textContent = 'Error: Both key and value are required';
+                return;
+            }
+            
+            try {
+                responseElement.textContent = 'Sending request...';
+                
+                const response = await fetch(API_URL, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        data: {
+                            key: key,
+                            value: value
+                        }
+                    })
+                });
+                
+                const data = await response.json();
+                responseElement.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                responseElement.textContent = `Error: ${error.message}`;
+            }
+        }
+        
+        // GET operation
+        async function getKeyValue() {
+            const key = document.getElementById('getKey').value.trim();
+            const responseElement = document.getElementById('getResponse');
+            
+            if (!key) {
+                responseElement.textContent = 'Error: Key is required';
+                return;
+            }
+            
+            try {
+                responseElement.textContent = 'Sending request...';
+                
+                const response = await fetch(`${API_URL}?key=${encodeURIComponent(key)}`, {
+                    method: 'GET'
+                });
+                
+                const data = await response.json();
+                responseElement.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                responseElement.textContent = `Error: ${error.message}`;
+            }
+        }
+        
+        // DELETE operation
+        async function deleteKeyValue() {
+            const key = document.getElementById('deleteKey').value.trim();
+            const responseElement = document.getElementById('deleteResponse');
+            
+            if (!key) {
+                responseElement.textContent = 'Error: Key is required';
+                return;
+            }
+            
+            try {
+                responseElement.textContent = 'Sending request...';
+                
+                const response = await fetch(`${API_URL}?key=${encodeURIComponent(key)}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                responseElement.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                responseElement.textContent = `Error: ${error.message}`;
+            }
+        }
+        
+        // Analyze JMeter CSV Results
+        function analyzeResults() {
+            const fileInput = document.getElementById('resultFile');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                alert('Please select a CSV file');
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                parseCSV(content);
+            };
+            reader.readAsText(file);
+        }
+        
+        function parseCSV(content) {
+            // Split by lines and remove any empty lines
+            const lines = content.split('\n').filter(line => line.trim() !== '');
+            
+            // Parse results
+            const results = [];
+            const headerLine = lines[0] || '';
+            
+            // JMeter CSV format: 
+            // timestamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,etc...
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.trim() === '') continue;
+                
+                // Use a regex to handle quoted fields correctly
+                const values = line.split(',');
+                
+                if (i > 0) { // Skip header row
+                    const result = {
+                        timestamp: parseInt(values[0]),
+                        responseTime: parseInt(values[1]),
+                        label: values[2],
+                        responseCode: values[3],
+                        responseMessage: values[4],
+                        threadName: values[5],
+                        success: values[7] === 'true',
+                    };
+                    results.push(result);
+                }
+            }
+            
+            displayResults(results);
+        }
+        
+        function displayResults(results) {
+            const container = document.getElementById('resultsContainer');
+            container.style.display = 'block';
+            
+            // Clear previous results
+            document.getElementById('resultsBody').innerHTML = '';
+            document.getElementById('metrics').innerHTML = '';
+            
+            // Calculate metrics
+            const totalRequests = results.length;
+            const successfulRequests = results.filter(r => r.success).length;
+            const failedRequests = totalRequests - successfulRequests;
+            const successRate = totalRequests > 0 ? (successfulRequests / totalRequests * 100).toFixed(2) : 0;
+            
+            // Response time metrics
+            const responseTimes = results.map(r => r.responseTime);
+            const avgResponseTime = responseTimes.length > 0 ? 
+                (responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length).toFixed(2) : 0;
+            const maxResponseTime = responseTimes.length > 0 ? Math.max(...responseTimes) : 0;
+            const minResponseTime = responseTimes.length > 0 ? Math.min(...responseTimes) : 0;
+            
+            // Count operation types
+            const operationCounts = {};
+            results.forEach(result => {
+                const operation = result.label;
+                operationCounts[operation] = (operationCounts[operation] || 0) + 1;
+            });
+            
+            // Count response codes
+            const responseCodes = {};
+            results.forEach(result => {
+                const code = result.responseCode;
+                responseCodes[code] = (responseCodes[code] || 0) + 1;
+            });
+            
+            // Display metrics
+            const metricsDiv = document.getElementById('metrics');
+            metricsDiv.innerHTML = `
+                <div class="metric-card">
+                    <div class="metric-label">Total Requests</div>
+                    <div class="metric-value">${totalRequests}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Success Rate</div>
+                    <div class="metric-value">${successRate}%</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Avg Response Time</div>
+                    <div class="metric-value">${avgResponseTime} ms</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Max Response Time</div>
+                    <div class="metric-value">${maxResponseTime} ms</div>
+                </div>
+            `;
+            
+            // Populate table
+            const tbody = document.getElementById('resultsBody');
+            results.forEach(result => {
+                const row = document.createElement('tr');
+                const timestamp = new Date(result.timestamp);
+                
+                row.innerHTML = `
+                    <td>${timestamp.toLocaleString()}</td>
+                    <td>${result.label}</td>
+                    <td>${result.responseTime} ms</td>
+                    <td>${result.responseCode}</td>
+                    <td>${result.responseMessage}</td>
+                    <td>${result.success ? 'Yes' : 'No'}</td>
+                `;
+                tbody.appendChild(row);
+            });
+            
+            // Create charts
+            createResponseTimeChart(results);
+            createRequestTypesChart(operationCounts);
+            createStatusCodesChart(responseCodes);
+        }
+        
+        // Response Time Distribution Chart
+        function createResponseTimeChart(results) {
+            const putTimes = results.filter(r => r.label.includes('PUT')).map(r => r.responseTime);
+            const getTimes = results.filter(r => r.label.includes('GET')).map(r => r.responseTime);
+            const deleteTimes = results.filter(r => r.label.includes('DELETE')).map(r => r.responseTime);
+            
+            const ctx = document.getElementById('responseTimeChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['PUT', 'GET', 'DELETE'],
+                    datasets: [{
+                        label: 'Average Response Time (ms)',
+                        data: [
+                            putTimes.length ? putTimes.reduce((a, b) => a + b, 0) / putTimes.length : 0,
+                            getTimes.length ? getTimes.reduce((a, b) => a + b, 0) / getTimes.length : 0,
+                            deleteTimes.length ? deleteTimes.reduce((a, b) => a + b, 0) / deleteTimes.length : 0
+                        ],
+                        backgroundColor: ['#2196F3', '#4CAF50', '#f44336']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Response Time (ms)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Request Types Chart
+        function createRequestTypesChart(operationCounts) {
+            const ctx = document.getElementById('requestTypesChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: Object.keys(operationCounts),
+                    datasets: [{
+                        data: Object.values(operationCounts),
+                        backgroundColor: ['#2196F3', '#4CAF50', '#f44336', '#9C27B0', '#FF9800']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Status Codes Chart
+        function createStatusCodesChart(responseCodes) {
+            const ctx = document.getElementById('statusCodesChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(responseCodes),
+                    datasets: [{
+                        data: Object.values(responseCodes),
+                        backgroundColor: ['#4CAF50', '#FF9800', '#f44336', '#2196F3', '#9C27B0']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        }
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html> 

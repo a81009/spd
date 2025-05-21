@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.4" properties="5.0">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="KV Store GET Test Plan">
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="Load Keys">
+        <stringProp name="scriptLanguage">groovy</stringProp>
+        <stringProp name="parameters"></stringProp>
+        <stringProp name="filename"></stringProp>
+        <stringProp name="cacheKey">true</stringProp>
+        <stringProp name="script">// Load keys from file
+String keysFile = &quot;C:\Users\Luisr\Documents\Univ_Prog\SPD_2425\SPD2\spd-main\load-tests\scripts\jmeter\keys\keys-20250521-005659.txt&quot;;
+java.io.File file = new java.io.File(keysFile);
+if (!file.exists()) {
+    log.error(&quot;Keys file not found: &quot; + keysFile);
+    return &quot;ERROR_NO_KEYS_FILE&quot;;
+}
+
+java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(file));
+String line;
+StringBuilder keysList = new StringBuilder();
+int keyCount = 0;
+
+while ((line = reader.readLine()) != null) {
+    if (line.contains(&quot;=&quot;)) {
+        String[] parts = line.split(&quot;=&quot;, 2);
+        String key = parts[0].trim();
+        String value = parts[1].trim();
+        
+        // Store key and value in properties
+        props.put(key, value);
+        keysList.append(key).append(&quot;,&quot;);
+        keyCount++;
+        
+        // Also store in vars for first time access
+        if (keyCount == 1) {
+            vars.put(&quot;first_key&quot;, key);
+        }
+    }
+}
+reader.close();
+
+// Store the list of keys
+if (keyCount &gt; 0) {
+    props.put(&quot;keys&quot;, keysList.toString());
+    props.put(&quot;key_count&quot;, String.valueOf(keyCount));
+    log.info(&quot;Loaded &quot; + keyCount + &quot; keys from file&quot;);
+    return &quot;SUCCESS_LOADED_&quot; + keyCount + &quot;_KEYS&quot;;
+} else {
+    log.error(&quot;No valid keys found in file&quot;);
+    return &quot;ERROR_NO_VALID_KEYS&quot;;
+}</stringProp>
+      </JSR223Sampler>
+      <hashTree/>
+      
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="GET Thread Group">
+        <stringProp name="ThreadGroup.num_threads">10</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">0</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">500</stringProp>
+        </elementProp>
+        <boolProp name="ThreadGroup.scheduler">false</boolProp>
+      </ThreadGroup>
+      <hashTree>
+        <ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="Request Timer">
+          <stringProp name="ConstantTimer.delay">20</stringProp>
+        </ConstantTimer>
+        <hashTree/>
+        
+        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Track GET Count">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="script">
+// Increment GET total counter
+synchronized(props) {
+    String getTotal = props.get("get_total");
+    if (getTotal == null) {
+        getTotal = "0";
+    }
+    int count = Integer.parseInt(getTotal) + 1;
+    props.put("get_total", String.valueOf(count));
+}
+          </stringProp>
+        </JSR223PreProcessor>
+        <hashTree/>
+        
+        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Get Random Key">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="script">// Get a random key from the loaded keys
+String keyList = props.get(&quot;keys&quot;);
+if (keyList == null || keyList.isEmpty()) {
+    log.error(&quot;No keys available for GET operation&quot;);
+    return &quot;default_key_no_keys_available&quot;;
+}
+
+String[] keys = keyList.split(&quot;,&quot;);
+java.util.List&lt;String&gt; validKeys = new java.util.ArrayList&lt;&gt;();
+
+for (String key : keys) {
+    if (key != null &amp;&amp; !key.trim().isEmpty()) {
+        validKeys.add(key.trim());
+    }
+}
+
+if (validKeys.isEmpty()) {
+    log.error(&quot;No valid keys in list&quot;);
+    return &quot;default_key_empty_list&quot;;
+}
+
+// Get a random key
+int randomIndex = (int)(Math.random() * validKeys.size());
+String selectedKey = validKeys.get(randomIndex);
+log.info(&quot;Selected key for GET: &quot; + selectedKey);
+return selectedKey;</stringProp>
+        </JSR223PreProcessor>
+        <hashTree/>
+        
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET Request">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="key" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.name">key</stringProp>
+                <stringProp name="Argument.value">${__groovy(vars.get("_jsr223PreProcessor_result"))}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+                <boolProp name="HTTPArgument.use_equals">true</boolProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+          <stringProp name="HTTPSampler.domain">localhost</stringProp>
+          <stringProp name="HTTPSampler.port">8000</stringProp>
+          <stringProp name="HTTPSampler.path">/kv</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <stringProp name="HTTPSampler.protocol">http</stringProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Check Cache Hit">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="script">// Check if the response indicates a cache hit
+String response = prev.getResponseDataAsString();
+boolean isCache = false;
+
+// Check if response contains cache indicator
+if (response.contains(&quot;&amp;quot;source&amp;quot;:&amp;quot;cache&amp;quot;&quot;) || 
+    response.contains(&quot;\&quot;source\&quot;:\&quot;cache\&quot;&quot;)) {
+    isCache = true;
+    
+    // Track cache hits
+    synchronized(props) {
+        String cacheHits = props.get(&quot;cache_hits&quot;);
+        if (cacheHits == null) {
+            cacheHits = &quot;0&quot;;
+        }
+        int hits = Integer.parseInt(cacheHits) + 1;
+        props.put(&quot;cache_hits&quot;, String.valueOf(hits));
+    }
+} else {
+    // Track DB hits
+    synchronized(props) {
+        String dbHits = props.get(&quot;db_hits&quot;);
+        if (dbHits == null) {
+            dbHits = &quot;0&quot;;
+        }
+        int hits = Integer.parseInt(dbHits) + 1;
+        props.put(&quot;db_hits&quot;, String.valueOf(hits));
+    }
+}
+
+// Track GET success
+if (prev.isSuccessful()) {
+    synchronized(props) {
+        String getSuccess = props.get(&quot;get_success&quot;);
+        if (getSuccess == null) {
+            getSuccess = &quot;0&quot;;
+        }
+        int count = Integer.parseInt(getSuccess) + 1;
+        props.put(&quot;get_success&quot;, String.valueOf(count));
+    }
+}
+
+return isCache ? &quot;CACHE_HIT&quot; : &quot;DB_HIT&quot;;</stringProp>
+          </JSR223PostProcessor>
+          <hashTree/>
+        </hashTree>
+      </hashTree>
+      
+      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="CSV">
+        <stringProp name="filename">C:\Users\Luisr\Documents\Univ_Prog\SPD_2425\SPD2\spd-main\load-tests\scripts\jmeter\results\0wad-20250521-005659.csv</stringProp>
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time><latency>true</latency><timestamp>true</timestamp><success>true</success><label>true</label><code>true</code><message>true</message><threadName>true</threadName><dataType>true</dataType><encoding>false</encoding><assertions>true</assertions><subresults>true</subresults><responseData>false</responseData><samplerData>false</samplerData><xml>false</xml><fieldNames>true</fieldNames><responseHeaders>false</responseHeaders><requestHeaders>false</requestHeaders><responseDataOnError>false</responseDataOnError><saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage><assertionsResultsToSave>0</assertionsResultsToSave><bytes>true</bytes><sentBytes>true</sentBytes><url>true</url><threadCounts>true</threadCounts><idleTime>true</idleTime><connectTime>true</connectTime>
+          </value>
+        </objProp>
+      </ResultCollector>
+      <hashTree/>
+      
+      <JSR223Listener guiclass="TestBeanGUI" testclass="JSR223Listener" testname="Statistics Report">
+        <stringProp name="scriptLanguage">groovy</stringProp>
+        <stringProp name="parameters"></stringProp>
+        <stringProp name="filename"></stringProp>
+        <stringProp name="cacheKey">true</stringProp>
+        <stringProp name="script">// Generate statistics report
+String getTotal = props.get(&quot;get_total&quot;) == null ? &quot;0&quot; : props.get(&quot;get_total&quot;);
+String getSuccess = props.get(&quot;get_success&quot;) == null ? &quot;0&quot; : props.get(&quot;get_success&quot;);
+String cacheHits = props.get(&quot;cache_hits&quot;) == null ? &quot;0&quot; : props.get(&quot;cache_hits&quot;);
+String dbHits = props.get(&quot;db_hits&quot;) == null ? &quot;0&quot; : props.get(&quot;db_hits&quot;);
+
+// Calculate percentages
+int getTotalInt = Integer.parseInt(getTotal);
+int getSuccessInt = Integer.parseInt(getSuccess);
+double getSuccessRate = getTotalInt &gt; 0 ? (getSuccessInt * 100.0 / getTotalInt) : 0;
+
+int cacheHitsInt = Integer.parseInt(cacheHits);
+int dbHitsInt = Integer.parseInt(dbHits);
+int totalHits = cacheHitsInt + dbHitsInt;
+double cacheRatio = totalHits &gt; 0 ? (cacheHitsInt * 100.0 / totalHits) : 0;
+
+// Store report in file
+String reportPath = &quot;C:\Users\Luisr\Documents\Univ_Prog\SPD_2425\SPD2\spd-main\load-tests\scripts\jmeter\stats\\get-stats-report-20250521-005659.txt&quot;;
+java.io.File file = new java.io.File(reportPath);
+java.io.FileWriter writer = new java.io.FileWriter(file);
+writer.write(&quot;====== GET Test Results: 0wad ======\n&quot;);
+writer.write(&quot;Date/Time: &quot; + new java.text.SimpleDateFormat(&quot;yyyy-MM-dd HH:mm:ss&quot;).format(new java.util.Date()) + &quot;\n&quot;);
+writer.write(&quot;Duration: 10s, Users: 10, TPS: 50\n\n&quot;);
+writer.write(&quot;====== Operation Statistics ======\n&quot;);
+writer.write(&quot;GET: &quot; + getSuccessInt + &quot;/&quot; + getTotalInt + &quot; successful (&quot; + String.format(&quot;%.2f&quot;, getSuccessRate) + &quot;%)\n\n&quot;);
+writer.write(&quot;====== Cache Statistics ======\n&quot;);
+writer.write(&quot;Cache Hits: &quot; + cacheHitsInt + &quot; (&quot; + String.format(&quot;%.2f&quot;, cacheRatio) + &quot;%)\n&quot;);
+writer.write(&quot;DB Hits: &quot; + dbHitsInt + &quot; (&quot; + String.format(&quot;%.2f&quot;, 100 - cacheRatio) + &quot;%)\n&quot;);
+writer.write(&quot;==============================\n&quot;);
+writer.close();
+
+return reportPath;</stringProp>
+      </JSR223Listener>
+      <hashTree/>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

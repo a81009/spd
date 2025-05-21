@@ -23,9 +23,14 @@ METRICS_PORT = int(os.getenv("METRICS_PORT", 9090))
 
 # Flag para controlar estado de saúde
 is_healthy = False
+# Recursos globais para poder fechar adequadamente
+db_pool = None
+redis_client = None
+rabbitmq_connection = None
+health_runner = None
 
 async def main() -> None:
-    global is_healthy
+    global is_healthy, db_pool, redis_client, rabbitmq_connection
     
     try:
         # Inicia o servidor de métricas numa porta diferente do API
@@ -33,10 +38,10 @@ async def main() -> None:
     
         # ---------- ligações ----------
         dsn = os.getenv("COCKROACH_DSN")
-        db: asyncpg.Pool = await asyncpg.create_pool(dsn=dsn)
+        db_pool = await asyncpg.create_pool(dsn=dsn)
 
         # cria BD/tabela se ainda não existir
-        async with db.acquire() as conn:
+        async with db_pool.acquire() as conn:
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS kv_store (
@@ -46,13 +51,13 @@ async def main() -> None:
                 """
             )
 
-        cache = redis.Redis(
+        redis_client = redis.Redis(
             host=os.getenv("REDIS_HOST", "redis"), decode_responses=True
         )
 
         mq_url = f"amqp://admin:admin@{os.getenv('MQ_HOST', 'rabbitmq')}:5672"
-        conn_mq = await aio_pika.connect_robust(mq_url)
-        ch = await conn_mq.channel()
+        rabbitmq_connection = await aio_pika.connect_robust(mq_url)
+        ch = await rabbitmq_connection.channel()
         add_q = await ch.declare_queue("add_key", durable=True)
         del_q = await ch.declare_queue("del_key", durable=True)
 
@@ -71,7 +76,7 @@ async def main() -> None:
                     # Operação no banco de dados
                     try:
                         db_start = measure_time()
-                        await db.execute(
+                        await db_pool.execute(
                             "UPSERT INTO kv_store (key, value) VALUES ($1, $2)", key, value
                         )
                         db_duration = calculate_duration(db_start)
@@ -84,7 +89,7 @@ async def main() -> None:
                     # Operação no cache
                     try:
                         cache_start = measure_time()
-                        await cache.set(key, value)
+                        await redis_client.set(key, value)
                         cache_duration = calculate_duration(cache_start)
                         PROCESSING_TIME.labels(queue="add_key", operation="cache_write").observe(cache_duration)
                         CACHE_OPERATION_COUNT.labels(operation="set", status="success").inc()
@@ -109,7 +114,7 @@ async def main() -> None:
                     # Operação no banco de dados
                     try:
                         db_start = measure_time()
-                        await db.execute("DELETE FROM kv_store WHERE key = $1", key)
+                        await db_pool.execute("DELETE FROM kv_store WHERE key = $1", key)
                         db_duration = calculate_duration(db_start)
                         PROCESSING_TIME.labels(queue="del_key", operation="db_delete").observe(db_duration)
                         DB_OPERATION_COUNT.labels(operation="delete", status="success").inc()
@@ -120,7 +125,7 @@ async def main() -> None:
                     # Operação no cache
                     try:
                         cache_start = measure_time()
-                        await cache.delete(key)
+                        await redis_client.delete(key)
                         cache_duration = calculate_duration(cache_start)
                         PROCESSING_TIME.labels(queue="del_key", operation="cache_delete").observe(cache_duration)
                         CACHE_OPERATION_COUNT.labels(operation="delete", status="success").inc()
@@ -144,11 +149,26 @@ async def main() -> None:
         # Setup Graceful Shutdown
         loop = asyncio.get_event_loop()
         
-        def handle_signals():
-            global is_healthy
+        async def cleanup_resources():
+            global is_healthy, db_pool, redis_client, rabbitmq_connection, health_runner
             is_healthy = False
             set_consumer_unhealthy()
+            
+            # Fecha recursos na ordem inversa da abertura
+            if rabbitmq_connection and not rabbitmq_connection.is_closed:
+                await rabbitmq_connection.close()
+                
+            if redis_client:
+                await redis_client.close()
+                
+            if db_pool:
+                await db_pool.close()
+                
+            print("✅ Recursos fechados com sucesso")
+            
+        def handle_signals():
             print("⚠️ Sinal de término recebido. Encerrando graciosamente...")
+            asyncio.create_task(cleanup_resources())
             loop.stop()
         
         # Register signal handlers
@@ -166,6 +186,11 @@ async def main() -> None:
         is_healthy = False
         set_consumer_unhealthy()
         print(f"❌ Erro crítico no consumer: {e}")
+        # Tenta limpar recursos em caso de erro
+        try:
+            await cleanup_resources()
+        except Exception:
+            pass  # Ignora erros de limpeza
         raise
 
 async def start_health_server():
@@ -173,6 +198,7 @@ async def start_health_server():
     Inicia um servidor HTTP simples para health checks do consumer.
     Pode ser usado por Docker/Kubernetes para health probes.
     """
+    global health_runner
     from aiohttp import web
     
     async def health_handler(request):
@@ -185,11 +211,31 @@ async def start_health_server():
     app.router.add_get('/health', health_handler)
     
     health_port = int(os.getenv("HEALTH_PORT", 8080))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', health_port)
+    health_runner = web.AppRunner(app)
+    await health_runner.setup()
+    site = web.TCPSite(health_runner, '0.0.0.0', health_port)
     await site.start()
     print(f"✅ Servidor de health check iniciado na porta {health_port}")
+
+async def cleanup_resources():
+    global is_healthy, db_pool, redis_client, rabbitmq_connection, health_runner
+    is_healthy = False
+    set_consumer_unhealthy()
+    
+    # Fecha recursos na ordem inversa da abertura
+    if rabbitmq_connection and not rabbitmq_connection.is_closed:
+        await rabbitmq_connection.close()
+        
+    if redis_client:
+        await redis_client.close()
+        
+    if db_pool:
+        await db_pool.close()
+        
+    if health_runner:
+        await health_runner.cleanup()
+        
+    print("✅ Recursos fechados com sucesso")
 
 if __name__ == "__main__":
     asyncio.run(main())

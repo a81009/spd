@@ -7,19 +7,25 @@ _QUEUE_ADD, _QUEUE_DEL = "add_key", "del_key"
 class MQProducer:
     def __init__(self) -> None:
         self._conn: aio_pika.RobustConnection | None = None
+        self._channel: aio_pika.Channel | None = None
         self._queues = [_QUEUE_ADD, _QUEUE_DEL]
 
-    async def _channel(self):
-        if not self._conn:
+    async def _get_channel(self):
+        if not self._conn or self._conn.is_closed:
             self._conn = await aio_pika.connect_robust(MQ_URL)
-        ch = await self._conn.channel()
-        await ch.declare_queue(_QUEUE_ADD, durable=True)
-        await ch.declare_queue(_QUEUE_DEL, durable=True)
-        return ch
+            self._channel = None
+            
+        if not self._channel or self._channel.is_closed:
+            self._channel = await self._conn.channel()
+            # Declare queues only once per channel
+            await self._channel.declare_queue(_QUEUE_ADD, durable=True)
+            await self._channel.declare_queue(_QUEUE_DEL, durable=True)
+            
+        return self._channel
 
     async def send(self, queue: str, payload: dict):
         start_time = measure_time()
-        ch = await self._channel()
+        ch = await self._get_channel()
         await ch.default_exchange.publish(
             aio_pika.Message(body=json.dumps(payload).encode()),
             routing_key=queue,
@@ -34,7 +40,7 @@ class MQProducer:
     async def _update_queue_metrics(self):
         """Atualiza métricas de tamanho das filas"""
         try:
-            ch = await self._channel()
+            ch = await self._get_channel()
             for queue_name in self._queues:
                 queue = await ch.get_queue(queue_name)
                 declaration = await queue.declare(passive=True)
@@ -48,14 +54,25 @@ class MQProducer:
         try:
             if not self._conn or self._conn.is_closed:
                 self._conn = await aio_pika.connect_robust(MQ_URL, timeout=2)
+                self._channel = None
                 
             if self._conn.is_closed:
                 return False
                 
-            ch = await self._conn.channel()
-            # Apenas verifica se consegue acessar os canais
+            # Verifica ou cria um canal
+            ch = await self._get_channel()
             return True
         except Exception:
             return False
+
+    async def close(self):
+        """Fecha a conexão e o canal com o RabbitMQ"""
+        if self._channel and not self._channel.is_closed:
+            await self._channel.close()
+            self._channel = None
+            
+        if self._conn and not self._conn.is_closed:
+            await self._conn.close()
+            self._conn = None
 
 mq = MQProducer()
