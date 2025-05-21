@@ -7,6 +7,8 @@ import sys
 import requests
 import time
 from urllib.parse import urljoin
+import io
+from contextlib import redirect_stdout
 
 # Configurações
 BASE_URL = os.environ.get("TEST_API_URL", "http://localhost")
@@ -78,20 +80,23 @@ class KVStoreAPITests(unittest.TestCase):
         test_key = f"test_key_{int(time.time())}"
         test_value = "test_value_123"
         
-        # PUT: Adicionar um valor
-        put_data = {"data": {"key": test_key, "value": test_value}}
-        response = requests.put(urljoin(BASE_URL, "/kv"), json=put_data)
-        self.assertEqual(response.status_code, 202)
-        self.assertEqual(response.json().get("detail"), "queued")
-        
-        # Esperar pelo processamento async (consumer)
-        time.sleep(2)
-        
-        # GET: Verificar se o valor foi armazenado
-        response = requests.get(urljoin(BASE_URL, f"/kv?key={test_key}"))
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data.get("data", {}).get("value"), test_value)
+        try:
+            # PUT: Adicionar um valor
+            put_data = {"data": {"key": test_key, "value": test_value}}
+            response = requests.put(urljoin(BASE_URL, "/kv"), json=put_data)
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.json().get("detail"), "queued")
+            
+            # Esperar pelo processamento async (consumer)
+            time.sleep(2)
+            
+            # GET: Verificar se o valor foi armazenado
+            response = requests.get(urljoin(BASE_URL, f"/kv?key={test_key}"))
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data.get("data", {}).get("value"), test_value)
+        except Exception as e:
+            self.fail(f"Erro ao testar operações PUT e GET: {str(e)}")
     
     def test_06_delete(self):
         """Testa operação DELETE"""
@@ -170,14 +175,34 @@ def run_tests():
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromTestCase(KVStoreAPITests)
     
-    # Configurar o runner para capturar os resultados
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
+    # Silenciar a saída detalhada dos testes
+    output_buffer = io.StringIO()
+    
+    # Redirecionar a saída padrão para o buffer durante a execução
+    with redirect_stdout(output_buffer):
+        runner = unittest.TextTestRunner(verbosity=0, stream=output_buffer)
+        result = runner.run(suite)
     
     total_tests = result.testsRun
     passed_tests = total_tests - len(result.errors) - len(result.failures)
     
-    print(f"\n✅ {passed_tests} de {total_tests} testes passaram com sucesso!")
+    # Exibir apenas uma mensagem sucinta com o resultado
+    if result.wasSuccessful():
+        print(f"✅ {passed_tests} de {total_tests} testes passaram com sucesso!")
+    else:
+        print(f"⚠️ {passed_tests} de {total_tests} testes passaram. Falhas detectadas.")
+        # Mostrar as falhas, mas de forma resumida
+        if result.failures:
+            print("\nFalhas:")
+            for i, (test, error) in enumerate(result.failures, 1):
+                test_name = test._testMethodName
+                print(f"  {i}. {test_name}: {error.splitlines()[-1] if error.splitlines() else 'Erro desconhecido'}")
+        
+        if result.errors:
+            print("\nErros:")
+            for i, (test, error) in enumerate(result.errors, 1):
+                test_name = test._testMethodName
+                print(f"  {i}. {test_name}: {error.splitlines()[-1] if error.splitlines() else 'Erro desconhecido'}")
     
     # Retornar código de saída apropriado
     if result.wasSuccessful():

@@ -8,9 +8,25 @@ echo "⏳ Aguardando serviços iniciarem..."
 sleep 10  # Aguarda inicialização mínima
 
 echo "🧪 Executando testes unitários..."
-# Instala as dependências necessárias se não existirem
-which pip > /dev/null || { echo "Instalando pip..."; apt-get update && apt-get install -y python3-pip; }
-pip install requests > /dev/null 2>&1 || echo "Dependências já instaladas"
+
+# Verificar se as dependências de teste estão instaladas sem tentar instalar via apt
+# Isso evita problemas de permissão
+check_dependencies() {
+  if ! command -v python3 &> /dev/null; then
+    echo "❌ Python3 não encontrado. Por favor, instale o Python antes de executar."
+    exit 1
+  fi
+  
+  # Verifica se o módulo requests está instalado usando o Python
+  if ! python3 -c "import requests" &> /dev/null; then
+    echo "⚠️ Módulo Python 'requests' não encontrado."
+    echo "⚠️ Para instalar manualmente: pip install requests"
+    echo "⚠️ Executando testes sem a instalação automática do módulo."
+  fi
+}
+
+# Verificar dependências
+check_dependencies
 
 # Executa os testes unitários
 python3 tests.py
