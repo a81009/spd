@@ -86,17 +86,6 @@ async def main() -> None:
                         DB_OPERATION_COUNT.labels(operation="upsert", status="error").inc()
                         raise e
                     
-                    # Operação no cache
-                    try:
-                        cache_start = measure_time()
-                        await redis_client.set(key, value)
-                        cache_duration = calculate_duration(cache_start)
-                        PROCESSING_TIME.labels(queue="add_key", operation="cache_write").observe(cache_duration)
-                        CACHE_OPERATION_COUNT.labels(operation="set", status="success").inc()
-                    except Exception:
-                        CACHE_OPERATION_COUNT.labels(operation="set", status="error").inc()
-                        # Não re-levanta a exceção pois o cache falhar não impede o funcionamento
-                    
                     # Métricas finais
                     total_duration = calculate_duration(start_time)
                     PROCESSING_TIME.labels(queue="add_key", operation="total").observe(total_duration)

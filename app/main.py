@@ -259,7 +259,7 @@ async def root():
 @app.get("/kv", status_code=status.HTTP_200_OK)
 async def get_value(key: str):
     """
-    GET /kv?key=<foo> → {"data":{"value":<bar>}}
+    GET /kv?key=<foo> → {"data":{"value":<bar>,"source":"cache|database"}}
     1. Tenta cache Redis
     2. Vai ao backend se falhar ou não existir
     3. (lazy write-back) grava em cache
@@ -268,7 +268,7 @@ async def get_value(key: str):
     try:
         cached = await cache_get(key)
         if cached is not None:
-            return {"data": {"value": cached}}
+            return {"data": {"value": cached, "source": "cache"}}
     except Exception:
         pass  # Redis indisponível – continua
 
@@ -283,7 +283,7 @@ async def get_value(key: str):
 
     # 3. grava em cache de forma assíncrona (não bloqueia resposta)
     asyncio.create_task(cache_set(key, value, CACHE_TTL_SECONDS))
-    return {"data": {"value": value}}
+    return {"data": {"value": value, "source": "database"}}
 
 
 @app.put("/kv", status_code=status.HTTP_202_ACCEPTED)

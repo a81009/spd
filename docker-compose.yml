@@ -2,12 +2,18 @@ version: '3.8'
 
 # ---------- VARIÁVEIS COMUNS ----------
 x-common-env: &common-env
-  REDIS_HOST: redis
+  # Redis configuração com Sentinel
+  REDIS_SENTINEL_HOST: sentinel1,sentinel2,sentinel3
+  REDIS_SENTINEL_PORT: 26379
+  REDIS_MASTER_NAME: mymaster
+  # Configurações antigas do Redis mantidas para compatibilidade
+  REDIS_HOST: redis-master
   REDIS_PORT: 6379
+  # Outras configurações
   MQ_HOST: rabbitmq
   MQ_PORT: 5672
   STORAGE_BACKEND: cockroach
-  COCKROACH_DSN: postgresql://root@cockroach1:26257/kvdb?sslmode=disable
+  COCKROACH_DSN: postgresql://root@cockroach-lb:26257/kvdb?sslmode=disable
   # Configurações de limite para o Redis
   MAX_CACHE_KEYS: 10000  # Limite de 10.000 chaves
   MAX_CACHE_MEMORY_MB: 100  # Limite de 100MB de memória
@@ -17,16 +23,15 @@ services:
   cockroach1:
     image: cockroachdb/cockroach:v23.2.4
     command: >
-      start-single-node
+      start
       --insecure
+      --join=cockroach1,cockroach2,cockroach3
       --listen-addr=:26257
       --http-addr=:8080
+      --locality=node=1
     hostname: cockroach1
     volumes:
-      - cockroach-data:/cockroach/cockroach-data
-    ports:
-      - "26257:26257"
-      - "8080:8080"
+      - cockroach-data1:/cockroach/cockroach-data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health?ready=1"]
@@ -34,6 +39,61 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  cockroach2:
+    image: cockroachdb/cockroach:v23.2.4
+    command: >
+      start
+      --insecure
+      --join=cockroach1,cockroach2,cockroach3
+      --listen-addr=:26257
+      --http-addr=:8080
+      --locality=node=2
+    hostname: cockroach2
+    volumes:
+      - cockroach-data2:/cockroach/cockroach-data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health?ready=1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      - cockroach1
+
+  cockroach3:
+    image: cockroachdb/cockroach:v23.2.4
+    command: >
+      start
+      --insecure
+      --join=cockroach1,cockroach2,cockroach3
+      --listen-addr=:26257
+      --http-addr=:8080
+      --locality=node=3
+    hostname: cockroach3
+    volumes:
+      - cockroach-data3:/cockroach/cockroach-data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health?ready=1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      - cockroach1
+
+  # Load balancer para o CockroachDB
+  cockroach-lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/cockroach-lb.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - cockroach1
+      - cockroach2
+      - cockroach3
+    restart: unless-stopped
 
   cockroach-init:
     image: cockroachdb/cockroach:v23.2.4
@@ -46,6 +106,8 @@ services:
         until cockroach sql --host=cockroach1 --insecure -e 'SELECT 1' >/dev/null 2>&1; do
           sleep 1;
         done;
+        echo '✅ Iniciando cluster…';
+        cockroach init --host=cockroach1 --insecure;
         echo '✅ Criando BD kvdb…';
         cockroach sql --host=cockroach1 --insecure -e \"CREATE DATABASE IF NOT EXISTS kvdb;\";
         echo '✅ Criando tabela kv_store…';
@@ -54,13 +116,14 @@ services:
       "
     restart: "no"
 
-  redis:
+  # Redis Cluster (1 master, 2 slaves, 3 sentinels)
+  redis-master:
     image: redis:7
     command: redis-server --maxmemory ${MAX_CACHE_MEMORY_MB:-100}mb --maxmemory-policy allkeys-lru
-    ports: ["6379:6379"]
+    volumes:
+      - redis-master-data:/data
     restart: unless-stopped
     environment:
-      # Redundância proposital para garantir que o Redis tenha as configurações mesmo que a aplicação falhe
       MAXMEMORY: "${MAX_CACHE_MEMORY_MB:-100}mb"
       MAXMEMORY_POLICY: "allkeys-lru"
     healthcheck:
@@ -68,6 +131,67 @@ services:
       interval: 5s
       timeout: 2s
       retries: 3
+
+  redis-slave1:
+    image: redis:7
+    command: redis-server --slaveof redis-master 6379 --maxmemory ${MAX_CACHE_MEMORY_MB:-100}mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-slave1-data:/data
+    depends_on:
+      - redis-master
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  redis-slave2:
+    image: redis:7
+    command: redis-server --slaveof redis-master 6379 --maxmemory ${MAX_CACHE_MEMORY_MB:-100}mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-slave2-data:/data
+    depends_on:
+      - redis-master
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  sentinel1:
+    image: redis:7
+    command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+    volumes:
+      - ./redis/sentinel.conf:/usr/local/etc/redis/sentinel.conf:ro
+    depends_on:
+      - redis-master
+      - redis-slave1
+      - redis-slave2
+    restart: unless-stopped
+
+  sentinel2:
+    image: redis:7
+    command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+    volumes:
+      - ./redis/sentinel.conf:/usr/local/etc/redis/sentinel.conf:ro
+    depends_on:
+      - redis-master
+      - redis-slave1
+      - redis-slave2
+    restart: unless-stopped
+
+  sentinel3:
+    image: redis:7
+    command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+    volumes:
+      - ./redis/sentinel.conf:/usr/local/etc/redis/sentinel.conf:ro
+    depends_on:
+      - redis-master
+      - redis-slave1
+      - redis-slave2
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3.13-management
@@ -90,16 +214,26 @@ services:
     depends_on:
       cockroach-init:
         condition: service_completed_successfully
-      redis:
+      redis-master:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
     environment:
       <<: *common-env
+      SERVICE_NAME: api-${HOSTNAME:-unknown}
+      SERVICE_PORT: 8000
     restart: unless-stopped
+    deploy:
+      mode: replicated
+      replicas: 2 # Inicia com 2 para HA
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+        reservations:
+          cpus: '0.10'
+          memory: 128M
     expose: ["8000"]
-    ports:
-      - "8000:8000"  # Para métricas Prometheus
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8000/health"]
       interval: 10s
@@ -114,16 +248,24 @@ services:
         condition: service_healthy
       cockroach-init:
         condition: service_completed_successfully
-      redis:
+      redis-master:
         condition: service_healthy
     environment:
       <<: *common-env
       METRICS_PORT: "9092"
       HEALTH_PORT: "8080"
+      SERVICE_NAME: consumer-${HOSTNAME:-unknown}
     restart: unless-stopped
-    ports:
-      - "9092:9092"
-      - "28081:8080"
+    deploy:
+      mode: replicated
+      replicas: 2 # Inicia com 2 para HA
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.10'
+          memory: 64M
     healthcheck:
       test: ["CMD-SHELL", "wget --spider --quiet http://localhost:8080/health || exit 1"]
       interval: 10s
@@ -154,6 +296,35 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    restart: unless-stopped
+
+  # Auto-scaler service
+  autoscaler:
+    build:
+      context: ./autoscaler
+      dockerfile: Dockerfile
+    depends_on:
+      - prometheus
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - API_REPLICAS_MIN=2
+      - API_REPLICAS_MAX=10
+      - API_CPU_HIGH_THRESHOLD=70
+      - API_CPU_LOW_THRESHOLD=30
+      - API_MEMORY_HIGH_THRESHOLD=80
+      - API_MEMORY_LOW_THRESHOLD=40
+      - CONSUMER_REPLICAS_MIN=2
+      - CONSUMER_REPLICAS_MAX=8
+      - CONSUMER_CPU_HIGH_THRESHOLD=70
+      - CONSUMER_CPU_LOW_THRESHOLD=30
+      - CONSUMER_MEMORY_HIGH_THRESHOLD=80
+      - CONSUMER_MEMORY_LOW_THRESHOLD=40
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - SCALING_INTERVAL=30  # segundos entre verificações
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
   # ---------- EDGE ----------
@@ -172,5 +343,10 @@ services:
       retries: 3
 
 volumes:
-  cockroach-data:
+  cockroach-data1:
+  cockroach-data2:
+  cockroach-data3:
   grafana-data:
+  redis-master-data:
+  redis-slave1-data:
+  redis-slave2-data:
