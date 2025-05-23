@@ -285,10 +285,13 @@ async def get_value(key: str):
     try:
         cached = await cache_get(key)
         if cached is not None:
+            CACHE_HIT.inc()
             return {"data": {"value": cached, "source": "cache"}}
     except Exception:
         pass  # Redis indisponível – continua
-
+    
+    CACHE_MISS.inc()
+    
     # 2. backend
     start_time = asyncio.get_event_loop().time()
     value = await backend.get(key)
@@ -326,24 +329,10 @@ async def delete_value(key: str):
     DELETE /kv?key=<foo>
     Envia para fila "del_key" e remove da cache.
     """
-    try:
-        # Verificar se a chave existe antes de enviar para a fila
-        value = await backend.get(key)
-        
-        # Se existir, enviar para a fila e remover do cache
-        if value is not None:
-            await mq.send("del_key", {"key": key})
-            asyncio.create_task(cache_del(key))
-            return {"detail": "queued"}
-        else:
-            # Se não existir, retornar 404
-            raise HTTPException(status_code=404, detail="Key not found")
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        # Log do erro e retorno genérico
-        print(f"Erro ao deletar chave {key}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    # Enviar para a fila e remover do cache
+    await mq.send("del_key", {"key": key})
+    asyncio.create_task(cache_del(key))
+    return {"detail": "queued"}
 
 
 @app.get("/cache/stats", status_code=status.HTTP_200_OK)
