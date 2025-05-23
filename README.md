@@ -67,6 +67,18 @@ O sistema implementa as seguintes operações básicas:
 - **Autoscaler**: Escala automaticamente os serviços baseado na carga
 - **Health Checks**: Verificação contínua do estado operacional do sistema
 
+## Implementação na Cloud
+
+Um plano detalhado para migração e implementação deste sistema na cloud está disponível no diretório `/CLOUD`. O plano contempla:
+
+- Arquitetura proposta em provedores de cloud (AWS, Azure, GCP)
+- Estratégia de migração em fases
+- Considerações de segurança e compliance
+- Estimativa de custos
+- Vantagens da migração para a cloud
+
+Para mais detalhes, consulte [CLOUD/README.md](CLOUD/README.md).
+
 ## Aspectos de Sistemas Distribuídos
 
 ### Concorrência
