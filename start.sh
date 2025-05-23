@@ -29,7 +29,7 @@ check_dependencies() {
 check_dependencies
 
 # Executa os testes unitários
-python3 tests.py
+python3 -m unitary_tests.run_tests
 
 # Se os testes passarem (código de saída 0), continua com a inicialização
 if [ $? -eq 0 ]; then
