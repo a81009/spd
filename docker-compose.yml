@@ -107,11 +107,6 @@ services:
     restart: unless-stopped
     ports:
       - "26258:26257"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8080/"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
   cockroach-init:
     image: cockroachdb/cockroach:v23.2.4
@@ -236,18 +231,10 @@ services:
         redis-sentinel /etc/redis/sentinel.conf
       '
     depends_on:
-      redis-master:
-        condition: service_healthy
-      redis-slave1:
-        condition: service_healthy
-      redis-slave2:
-        condition: service_healthy
+      - redis-master
+      - redis-slave1
+      - redis-slave2
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
 
   sentinel2:
     image: redis:7
@@ -264,18 +251,10 @@ services:
         redis-sentinel /etc/redis/sentinel.conf
       '
     depends_on:
-      redis-master:
-        condition: service_healthy
-      redis-slave1:
-        condition: service_healthy
-      redis-slave2:
-        condition: service_healthy
+      - redis-master
+      - redis-slave1
+      - redis-slave2
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
 
   sentinel3:
     image: redis:7
@@ -292,18 +271,10 @@ services:
         redis-sentinel /etc/redis/sentinel.conf
       '
     depends_on:
-      redis-master:
-        condition: service_healthy
-      redis-slave1:
-        condition: service_healthy
-      redis-slave2:
-        condition: service_healthy
+      - redis-master
+      - redis-slave1
+      - redis-slave2
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
 
   rabbitmq:
     image: rabbitmq:3.13-management
@@ -455,7 +426,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 30s
 
   consumer:
     build: ./consumer
@@ -487,7 +458,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 30s
 
   # ---------- MONITORING ----------
   prometheus:
@@ -497,22 +468,14 @@ services:
     ports:
       - "9091:9090"
     depends_on:
-      api:
-        condition: service_started
-      consumer:
-        condition: service_started
+      - api
+      - consumer
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:9090/-/healthy"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
   grafana:
     image: grafana/grafana:10.4.0
     depends_on:
-      prometheus:
-        condition: service_healthy
+      - prometheus
     ports:
       - "3000:3000"
     environment:
@@ -523,11 +486,6 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:3000/api/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
   # Auto-scaler service
   autoscaler:
@@ -535,8 +493,7 @@ services:
       context: ./autoscaler
       dockerfile: Dockerfile
     depends_on:
-      prometheus:
-        condition: service_healthy
+      - prometheus
     environment:
       - PROMETHEUS_URL=http://prometheus:9090
       - API_REPLICAS_MIN=3
@@ -556,12 +513,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "./healthcheck.sh"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
 
   # ---------- EDGE ----------
   api-lb-nginx:
@@ -570,8 +521,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     ports: ["80:80"]
     depends_on:
-      api:
-        condition: service_started
+      - api
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://localhost/health"]
