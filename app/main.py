@@ -1,6 +1,7 @@
 # app/main.py
 import asyncio
 import signal
+import os
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Body, status, Request, Response
@@ -51,7 +52,20 @@ async def shutdown_event():
 # Interface web HTML para a API
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return """
+    # Buscar o arquivo index.html na raiz do projeto
+    try:
+        # Tentar primeiro um caminho relativo à execução
+        if os.path.exists("./index.html"):
+            with open("./index.html", "r", encoding="utf-8") as f:
+                return f.read()
+        # Tentar um caminho relativo ao diretório do projeto
+        elif os.path.exists("/app/index.html"):
+            with open("/app/index.html", "r", encoding="utf-8") as f:
+                return f.read()
+        # Se não encontrar, usar o HTML hardcoded como fallback
+        else:
+            print("WARNING: index.html not found, using fallback HTML")
+            return """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -253,7 +267,10 @@ async def root():
     </script>
 </body>
 </html>
-    """
+"""
+    except Exception as e:
+        print(f"ERROR loading index.html: {str(e)}")
+        return "<h1>Error loading interface</h1><p>Check server logs for details.</p>"
 
 # ---------- ROTAS ----------
 @app.get("/kv", status_code=status.HTTP_200_OK)
