@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "🔥 Iniciando testes de carga com Siege (versão PUT) 🔥"
+echo "🔥 Iniciando testes de carga com Siege 🔥"
 
 # Verificar se o Siege está instalado
 if ! command -v siege &> /dev/null; then
@@ -18,7 +18,7 @@ ask_user_settings() {
     echo "2) GET    - Leitura de chaves"
     echo "3) DELETE - Remoção de chaves"
     echo "4) ALL    - Todos os testes acima em sequência"
-    
+
     read -p "Escolha (1-4) [padrão: 1]: " test_choice
     case "${test_choice:-1}" in
         1) TEST_TYPE="put" ;;
@@ -27,362 +27,333 @@ ask_user_settings() {
         4) TEST_TYPE="all" ;;
         *) echo "Opção inválida, usando PUT"; TEST_TYPE="put" ;;
     esac
-    
+
     # Duração do teste em segundos
-    echo -e "\n⏱️ Duração do teste em segundos:"
-    read -p "Digite a duração em segundos [padrão: 60]: " test_duration
-    # Validação: garantir que é um número
-    if ! [[ "${test_duration:-60}" =~ ^[0-9]+$ ]]; then
-        echo "Entrada inválida. Usando valor padrão de 60 segundos."
-        test_duration=60
+    echo -e "\n⏱️  Duração do teste em segundos:"
+    read -p "Digite a duração em segundos [padrão: 60]: " test_duration_input
+    if ! [[ "${test_duration_input:-60}" =~ ^[0-9]+$ ]]; then
+        echo "Entrada inválida. Usando valor padrão de 60 segundos." >&2
+        test_duration_input=60
     fi
-    # Agora usamos apenas segundos
-    DURATION_SECONDS="${test_duration:-60}"
-    
+    DURATION_SECONDS="${test_duration_input:-60}"
+
     # Número de usuários concorrentes
     echo -e "\n👥 Usuários concorrentes:"
-    read -p "Digite o número de usuários concorrentes [padrão: 25]: " concurrent_users
-    # Validação: garantir que é um número
-    if ! [[ "${concurrent_users:-25}" =~ ^[0-9]+$ ]]; then
-        echo "Entrada inválida. Usando valor padrão de 25 usuários."
-        concurrent_users=25
+    read -p "Digite o número de usuários concorrentes [padrão: 25]: " concurrent_users_input
+    if ! [[ "${concurrent_users_input:-25}" =~ ^[0-9]+$ ]]; then
+        echo "Entrada inválida. Usando valor padrão de 25 usuários." >&2
+        concurrent_users_input=25
     fi
-    USERS="${concurrent_users:-25}"
-    
+    USERS="${concurrent_users_input:-25}"
+
     # Número de chaves
     echo -e "\n🔑 Número de chaves para testar:"
-    read -p "Digite o número de chaves para testar [padrão: 100]: " num_keys
-    # Validação: garantir que é um número
-    if ! [[ "${num_keys:-100}" =~ ^[0-9]+$ ]]; then
-        echo "Entrada inválida. Usando valor padrão de 100 chaves."
-        num_keys=100
+    read -p "Digite o número de chaves para testar (para pré-população e variedade de URLs) [padrão: 100]: " num_keys_input
+    if ! [[ "${num_keys_input:-100}" =~ ^[0-9]+$ ]]; then
+        echo "Entrada inválida. Usando valor padrão de 100 chaves." >&2
+        num_keys_input=100
     fi
-    NUM_KEYS="${num_keys:-100}"
-    
-    # Confirmar escolhas
+    USER_REQUESTED_NUM_KEYS="${num_keys_input:-100}" # Número que o usuário realmente pediu
+
+    MAX_URL_FILE_ENTRIES=50000 # Limite máximo de arquivos/URLs únicos para o Siege
+    NUM_KEYS_FOR_FILE_GENERATION=$USER_REQUESTED_NUM_KEYS
+
+    if [ "$USER_REQUESTED_NUM_KEYS" -gt "$MAX_URL_FILE_ENTRIES" ]; then
+        echo "⚠️  O número de chaves solicitado ($USER_REQUESTED_NUM_KEYS) é alto para gerar arquivos de URL/dados individuais." >&2
+        echo "    Limitando o número de arquivos de dados JSON e entradas nos arquivos de URL do Siege a $MAX_URL_FILE_ENTRIES." >&2
+        echo "    Isso afeta a variedade de chaves *únicas* que o Siege usará por ciclo no arquivo de URLs." >&2
+        NUM_KEYS_FOR_FILE_GENERATION=$MAX_URL_FILE_ENTRIES
+    fi
+
     echo -e "\n⚙️ Configurações selecionadas:"
     echo "- Tipo de teste: $TEST_TYPE"
     echo "- Duração do teste: $DURATION_SECONDS segundos"
     echo "- Usuários concorrentes: $USERS"
-    echo "- Número de chaves: $NUM_KEYS"
-    
+    echo "- Número de chaves (solicitado pelo usuário para o dataset): $USER_REQUESTED_NUM_KEYS"
+    if [ "$USER_REQUESTED_NUM_KEYS" -ne "$NUM_KEYS_FOR_FILE_GENERATION" ]; then
+        echo "- Número de chaves (para arquivos de URL/dados do Siege): $NUM_KEYS_FOR_FILE_GENERATION"
+    else
+        echo "- Número de chaves (para arquivos de URL/dados do Siege): $NUM_KEYS_FOR_FILE_GENERATION"
+    fi
+
+
     read -p "Confirmar estas configurações? (S/n): " confirm
     if [[ "${confirm:-S}" =~ ^[Nn] ]]; then
-        echo "Configurações canceladas. Iniciando novamente..."
-        ask_user_settings
+        echo "Configurações canceladas. Iniciando novamente..." >&2
+        ask_user_settings # Recursive call
     fi
 }
 
-# Configurações padrão (serão substituídas pelo input do usuário)
-API_URL="http://localhost/kv"
-NUM_KEYS=100
+API_URL="http://localhost/kv" # URL base da API
+# Configurações padrão são substituídas por ask_user_settings
+USER_REQUESTED_NUM_KEYS=100
+NUM_KEYS_FOR_FILE_GENERATION=100
 USERS=25
 DURATION_SECONDS=60
 TEST_TYPE="put"
 
-# Perguntar ao usuário
 ask_user_settings
 
-# Verificar se precisamos do bc para cálculos
 if ! command -v bc &> /dev/null; then
-    echo "⚠️ O comando 'bc' não está instalado. Algumas métricas podem não ser calculadas."
-    echo "👉 Para instalar no Ubuntu/Debian: sudo apt-get install bc"
+    echo "⚠️ O comando 'bc' não está instalado. Algumas métricas podem não ser calculadas." >&2
+    echo "👉 Para instalar no Ubuntu/Debian: sudo apt-get install bc" >&2
 fi
 
-# Criar diretório para arquivos temporários
 TEMP_DIR="siege_temp"
 mkdir -p "$TEMP_DIR"
 
-# Função para criar o arquivo de configuração do Siege
-create_siegerc() {
-    # Se o arquivo .siegerc não existir, cria um básico
-    if [ ! -f ~/.siegerc ]; then
-        echo "Criando arquivo de configuração do Siege..."
-        cat > ~/.siegerc << EOF
-# Configurações do Siege
-verbose = true
-quiet = false
-json_output = false
-show-logfile = false
-logging = false
-protocol = HTTP/1.1
-chunked = true
-connection = keep-alive
-concurrent = 25
-time = 60s
-EOF
-    fi
-}
-
-# Verifica se o curl está instalado
 check_requirements() {
     if ! command -v curl &> /dev/null; then
-        echo "❌ curl não está instalado. Este script precisa do curl para funcionar."
-        echo "👉 Para instalar no Ubuntu/Debian: sudo apt-get install curl"
+        echo "❌ curl não está instalado. Este script precisa do curl para o script auxiliar e verificação da API." >&2
+        echo "👉 Para instalar no Ubuntu/Debian: sudo apt-get install curl" >&2
         exit 1
     fi
 }
 
-# Função para gerar um script auxiliar para requisições PUT
-generate_siege_put_script() {
-    echo "Gerando script auxiliar para requisições PUT..."
-    
-    local script_file="$TEMP_DIR/siege_put.sh"
-    
-    # Criar script que vai ser usado pelo Siege para enviar PUT
-    cat > "$script_file" << 'EOF'
-#!/bin/bash
-# Script auxiliar para forçar Siege a usar PUT com dados JSON
-URL=$1
-DATA_FILE=$2
+generate_curl_put_helper_script() {
+    echo "Gerando script auxiliar com curl para requisições PUT (para testes manuais)..."
+    local script_file="$TEMP_DIR/manual_put_request.sh"
 
-# Verificar se os argumentos foram passados
-if [[ -z "$URL" || -z "$DATA_FILE" ]]; then
-    echo "Erro: URL ou arquivo de dados não fornecido"
+    cat > "$script_file" << EOF
+#!/bin/bash
+# Script auxiliar para forçar Siege a usar PUT com dados JSON (USO MANUAL com curl)
+URL=\$1
+DATA_FILE=\$2
+
+if [[ -z "\$URL" || -z "\$DATA_FILE" ]]; then
+    echo "Erro: URL ou arquivo de dados não fornecido" >&2
+    echo "Uso: \$0 <URL> <DATA_FILE_PATH>" >&2
+    exit 1
+fi
+if [ ! -f "\$DATA_FILE" ]; then
+    echo "Erro: Arquivo de dados '\$DATA_FILE' não encontrado." >&2
     exit 1
 fi
 
-# Ler conteúdo do arquivo JSON
-JSON_DATA=$(cat "$DATA_FILE")
+JSON_DATA=\$(cat "\$DATA_FILE")
 
-# Enviar requisição PUT com curl
-curl -s -X PUT "$URL" \
-     -H "Content-Type: application/json" \
-     -d "$JSON_DATA"
+curl -s -v -X PUT "\$URL" \\
+     -H "Content-Type: application/json" \\
+     -d "\$JSON_DATA"
+echo "" # Newline
 EOF
-
-    # Tornar o script executável
     chmod +x "$script_file"
-    
-    echo "✅ Script auxiliar criado: $script_file"
-    echo "Este script vai executar requisições PUT usando curl internamente"
-    
-    echo "$script_file"
+    echo "✅ Script auxiliar para curl criado: $script_file"
+    echo "   Ex: $script_file $API_URL $TEMP_DIR/data_1.json"
 }
 
-# Função para criar arquivos de dados JSON para testes PUT
 create_json_data_files() {
-    echo "Criando arquivos de dados JSON..."
-    
-    for i in $(seq 1 $NUM_KEYS); do
+    echo "Criando $NUM_KEYS_FOR_FILE_GENERATION arquivos de dados JSON..."
+    local count=0
+    for i in $(seq 1 "$NUM_KEYS_FOR_FILE_GENERATION"); do
         local data_file="$TEMP_DIR/data_$i.json"
-        echo "{\"data\":{\"key\":\"siege_key_$i\",\"value\":\"siege_value_$i\"}}" > "$data_file"
+        printf "{\"data\":{\"key\":\"siege_key_%s\",\"value\":\"siege_value_%s\"}}\n" "$i" "$i" > "$data_file"
+        count=$((count + 1))
+        if (( count % 1000 == 0 && NUM_KEYS_FOR_FILE_GENERATION > 5000 )); then echo -n "."; fi
     done
-    
-    echo "✅ Arquivos de dados JSON criados"
-    echo "📄 Exemplo de conteúdo do arquivo de dados:"
-    cat "$TEMP_DIR/data_1.json"
+    echo -e "\n✅ $count arquivos de dados JSON criados em $TEMP_DIR/"
+    if [ "$count" -gt 0 ]; then
+        echo "📄 Exemplo de conteúdo do arquivo de dados ($TEMP_DIR/data_1.json):"
+        cat "$TEMP_DIR/data_1.json"
+    fi
 }
 
-# Função para preparar arquivo PUT para o Siege
-# Usaremos um script auxiliar para forçar o método PUT
 create_put_urls_file() {
     local urls_file="$TEMP_DIR/put_urls.txt"
-    local put_script="$1"
-    
-    > "$urls_file"
-    
-    # Para cada chave, criar linha que chama o script auxiliar
-    # que vai executar curl com PUT
-    for i in $(seq 1 $NUM_KEYS); do
+    echo "Criando arquivo de URLs PUT com $NUM_KEYS_FOR_FILE_GENERATION entradas..." >&2
+    (
+    for i in $(seq 1 "$NUM_KEYS_FOR_FILE_GENERATION"); do
         local data_file="$TEMP_DIR/data_$i.json"
-        echo "$put_script $API_URL $data_file" >> "$urls_file"
+        printf "%s PUT <%s\n" "$API_URL" "$data_file"
+        if (( i % 1000 == 0 && NUM_KEYS_FOR_FILE_GENERATION > 5000 )); then echo -n "." >&2; fi
     done
-    
-    # Retorna o nome do arquivo sem imprimir outras mensagens
+    ) > "$urls_file"
+    echo -e "\n✅ Arquivo de URLs para PUT criado: $urls_file" >&2
     echo "$urls_file"
 }
 
-# Função para preparar arquivo GET para o Siege
 create_get_urls_file() {
     local urls_file="$TEMP_DIR/get_urls.txt"
-    
-    > "$urls_file"
-    
-    # Para cada chave, adicionar uma URL GET
-    for i in $(seq 1 $NUM_KEYS); do
-        echo "$API_URL?key=siege_key_$i" >> "$urls_file"
+    echo "Criando arquivo de URLs GET com $NUM_KEYS_FOR_FILE_GENERATION entradas..." >&2
+    (
+    for i in $(seq 1 "$NUM_KEYS_FOR_FILE_GENERATION"); do
+        printf "%s?key=siege_key_%s\n" "$API_URL" "$i"
+        if (( i % 1000 == 0 && NUM_KEYS_FOR_FILE_GENERATION > 5000 )); then echo -n "." >&2; fi
     done
-    
-    # Retorna o nome do arquivo sem imprimir outras mensagens
+    ) > "$urls_file"
+    echo -e "\n✅ Arquivo de URLs para GET criado: $urls_file" >&2
     echo "$urls_file"
 }
 
-# Função para preparar arquivo DELETE para o Siege
 create_delete_urls_file() {
     local urls_file="$TEMP_DIR/delete_urls.txt"
-    
-    > "$urls_file"
-    
-    # Para cada chave, adicionar uma URL DELETE
-    for i in $(seq 1 $NUM_KEYS); do
-        echo "$API_URL?key=siege_key_$i DELETE" >> "$urls_file"
+    echo "Criando arquivo de URLs DELETE com $NUM_KEYS_FOR_FILE_GENERATION entradas..." >&2
+    (
+    for i in $(seq 1 "$NUM_KEYS_FOR_FILE_GENERATION"); do
+        printf "%s?key=siege_key_%s DELETE\n" "$API_URL" "$i"
+        if (( i % 1000 == 0 && NUM_KEYS_FOR_FILE_GENERATION > 5000 )); then echo -n "." >&2; fi
     done
-    
-    # Retorna o nome do arquivo sem imprimir outras mensagens
+    ) > "$urls_file"
+    echo -e "\n✅ Arquivo de URLs para DELETE criado: $urls_file" >&2
     echo "$urls_file"
 }
 
-# Teste simples para verificar se a API funciona
 verify_api_works() {
     echo -e "\n🧪 Verificando se a API está respondendo corretamente..."
-    
-    # Usar o curl que sabemos funcionar
-    local response=$(curl -s -X PUT "$API_URL" \
+    local response_code
+    response_code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$API_URL" \
         -H "Content-Type: application/json" \
-        -d '{"data":{"key":"test_key","value":"test_value"}}')
-    
-    if [[ "$response" == *"queued"* ]]; then
-        echo "✅ API respondeu corretamente à requisição PUT"
+        -d '{"data":{"key":"api_check_key","value":"api_check_value"}}')
+
+    if [[ "$response_code" -ge 200 && "$response_code" -lt 300 ]]; then
+        echo "✅ API respondeu corretamente à requisição PUT de verificação (HTTP $response_code)"
+        curl -s -o /dev/null -X DELETE "$API_URL?key=api_check_key" # Limpa a chave de teste
         return 0
     else
-        echo "⚠️ API não respondeu como esperado. Resposta:"
-        echo "$response"
-        echo "Deseja continuar mesmo assim? (S/n)"
-        read -p "> " confirm
-        if [[ "${confirm:-S}" =~ ^[Nn] ]]; then
-            echo "Teste cancelado."
+        echo "⚠️ API não respondeu como esperado na verificação (HTTP $response_code)." >&2
+        local full_response
+        full_response=$(curl -s -X PUT "$API_URL" -H "Content-Type: application/json" -d '{"data":{"key":"api_check_key","value":"api_check_value"}}')
+        echo "Resposta completa (se houver): $full_response" >&2
+        read -p "Deseja continuar mesmo assim? (S/n): " confirm_continue
+        if [[ "${confirm_continue:-S}" =~ ^[Nn] ]]; then
+            echo "Teste cancelado." >&2
             exit 1
         fi
     fi
 }
 
-# Pré-popular o banco de dados com chaves (usando curl, não Siege)
 prepopulate_keys() {
-    echo -e "\n🔄 Pré-populando o banco com chaves para testes..."
-    
-    for i in $(seq 1 $NUM_KEYS); do
-        # Usar curl que sabemos funcionar para pré-popular
+    echo -e "\n🔄 Pré-populando o banco com $USER_REQUESTED_NUM_KEYS chaves para testes GET/DELETE..."
+    echo "   (As URLs de GET/DELETE geradas para o Siege usarão as primeiras $NUM_KEYS_FOR_FILE_GENERATION chaves deste conjunto)"
+
+    if [ "$USER_REQUESTED_NUM_KEYS" -gt 20000 ]; then
+        echo "⚠️  Este número de chaves para pré-popular ($USER_REQUESTED_NUM_KEYS) é grande e pode demorar bastante." >&2
+        read -p "    Confirmar pré-população de todas as $USER_REQUESTED_NUM_KEYS chaves? (S/n): " confirm_prepop
+        if [[ "${confirm_prepop:-S}" =~ ^[Nn] ]]; then
+            echo "Pré-população cancelada. Os testes GET/DELETE podem não ter dados ou ter dados insuficientes." >&2
+            return
+        fi
+    fi
+
+    local count=0
+    for i in $(seq 1 "$USER_REQUESTED_NUM_KEYS"); do
         curl -s -X PUT "$API_URL" \
              -H "Content-Type: application/json" \
-             -d "{\"data\":{\"key\":\"siege_key_$i\",\"value\":\"siege_value_$i\"}}" > /dev/null
-             
-        # Mostrar progresso
-        if (( i % 20 == 0 )); then
-            echo -n "."
-        fi
-        if (( i % 100 == 0 )); then
-            echo " $i/$NUM_KEYS"
+             -d "{\"data\":{\"key\":\"siege_key_$i\",\"value\":\"prepopulated_value_$i\"}}" -o /dev/null
+        count=$((count + 1))
+        if (( count % 20 == 0 )); then echo -n "."; fi
+        if (( count % 250 == 0 )) || [ "$count" == "$USER_REQUESTED_NUM_KEYS" ]; then
+             echo " $count/$USER_REQUESTED_NUM_KEYS"
         fi
     done
-    
-    echo -e "\n✅ Chaves pré-populadas. Esperando processamento..."
-    sleep 3  # Dar tempo para processamento das mensagens
+    echo -e "\n✅ $count chaves pré-populadas. Esperando um momento para processamento pela API..."
+    sleep 3
 }
 
-# Executar teste PUT com Siege
 run_put_test() {
-    # Verificar requisitos
     check_requirements
-    
-    # Verificar se a API está funcionando
     verify_api_works
-    
+
     echo "Preparando arquivos para teste PUT..."
-    
-    # Primeiro criamos todos os arquivos de dados JSON
     create_json_data_files
-    
-    # Criar script auxiliar para forçar PUT
-    local put_script=$(generate_siege_put_script)
-    
-    # Agora criamos o arquivo de URLs que usa o script auxiliar
-    local urls_file=$(create_put_urls_file "$put_script")
-    
-    echo "✅ Arquivo de URLs para PUT criado: $urls_file"
-    echo -e "\n📄 Primeiras linhas do arquivo de URLs:"
+    generate_curl_put_helper_script
+
+    local urls_file
+    urls_file=$(create_put_urls_file)
+
+    echo -e "\n📄 Primeiras linhas do arquivo de URLs ($urls_file):"
     head -n 3 "$urls_file"
-    
+
     echo -e "\n📊 TESTE DE CARGA: OPERAÇÃO PUT (Criação/Atualização de chaves)"
     echo "🔄 Executando teste com $USERS usuários concorrentes por $DURATION_SECONDS segundos..."
-    
-    # Comando para validação
-    echo "O Siege vai usar este comando:"
-    echo "siege -f \"$urls_file\" -c $USERS -t ${DURATION_SECONDS}S"
-    
-    # Executar o Siege com segundos explícitos
-    # Não precisamos do content-type pois o script auxiliar já define
-    siege -f "$urls_file" -c "$USERS" -t "${DURATION_SECONDS}S"
+    echo "   Siege usará $NUM_KEYS_FOR_FILE_GENERATION URLs/arquivos de dados únicos e os reutilizará se necessário."
+
+    local siege_command="siege -H \"Content-Type: application/json\" -f \"$urls_file\" -c \"$USERS\" -t \"${DURATION_SECONDS}S\" --log=$TEMP_DIR/siege_put_results.log --json-output"
+    echo "Comando do Siege:"
+    echo "$siege_command"
+    eval "$siege_command"
 }
 
-# Executar teste GET com Siege
 run_get_test() {
-    # Primeiro pré-popular o banco
+    check_requirements
+    verify_api_works
     prepopulate_keys
-    
+
     echo "Preparando arquivos para teste GET..."
-    # Capturamos APENAS o nome do arquivo retornado, sem outras mensagens
-    local urls_file=$(create_get_urls_file)
-    echo "✅ Arquivo de URLs para GET criado: $urls_file"
-    echo -e "\n📄 Primeiras linhas do arquivo de URLs:"
+    local urls_file
+    urls_file=$(create_get_urls_file)
+    echo -e "\n📄 Primeiras linhas do arquivo de URLs ($urls_file):"
     head -n 3 "$urls_file"
-    
+
     echo -e "\n📊 TESTE DE CARGA: OPERAÇÃO GET (Leitura de chaves)"
     echo "🔄 Executando teste com $USERS usuários concorrentes por $DURATION_SECONDS segundos..."
-    
-    # Executar o Siege com segundos explícitos
-    siege -f "$urls_file" -c "$USERS" -t "${DURATION_SECONDS}S"
+    echo "   Siege tentará ler chaves do conjunto de $NUM_KEYS_FOR_FILE_GENERATION URLs gerados."
+
+    local siege_command="siege -f \"$urls_file\" -c \"$USERS\" -t \"${DURATION_SECONDS}S\" --log=$TEMP_DIR/siege_get_results.log --json-output"
+    echo "Comando do Siege:"
+    echo "$siege_command"
+    eval "$siege_command"
 }
 
-# Executar teste DELETE com Siege
 run_delete_test() {
-    # Primeiro pré-popular o banco
+    check_requirements
+    verify_api_works
     prepopulate_keys
-    
+
     echo "Preparando arquivos para teste DELETE..."
-    # Capturamos APENAS o nome do arquivo retornado, sem outras mensagens
-    local urls_file=$(create_delete_urls_file)
-    echo "✅ Arquivo de URLs para DELETE criado: $urls_file"
-    echo -e "\n📄 Primeiras linhas do arquivo de URLs:"
+    local urls_file
+    urls_file=$(create_delete_urls_file)
+    echo -e "\n📄 Primeiras linhas do arquivo de URLs ($urls_file):"
     head -n 3 "$urls_file"
-    
+
     echo -e "\n📊 TESTE DE CARGA: OPERAÇÃO DELETE (Remoção de chaves)"
     echo "🔄 Executando teste com $USERS usuários concorrentes por $DURATION_SECONDS segundos..."
-    
-    # Executar o Siege com segundos explícitos
-    siege -f "$urls_file" -c "$USERS" -t "${DURATION_SECONDS}S"
+    echo "   Siege tentará remover chaves do conjunto de $NUM_KEYS_FOR_FILE_GENERATION URLs gerados."
+
+    local siege_command="siege -f \"$urls_file\" -c \"$USERS\" -t \"${DURATION_SECONDS}S\" --log=$TEMP_DIR/siege_delete_results.log --json-output"
+    echo "Comando do Siege:"
+    echo "$siege_command"
+    eval "$siege_command"
 }
 
-# Função principal
-run_tests() {
-    local test_type=$1
-    
-    case $test_type in
-        "put")
-            run_put_test
-            ;;
-        "get")
-            run_get_test
-            ;;
-        "delete")
-            run_delete_test
-            ;;
-        "all")
-            run_put_test
-            sleep 5
-            run_get_test
-            sleep 5
-            run_delete_test
-            ;;
-        *)
-            echo "❌ Tipo de teste inválido: $test_type"
-            echo "Opções válidas: put, get, delete, all"
-            exit 1
-            ;;
-    esac
+cleanup() {
+    echo -e "\n🧹 Limpando arquivos temporários em $TEMP_DIR..."
+    echo "Diretório temporário $TEMP_DIR foi mantido para análise. Apague-o manualmente se desejar."
 }
 
-# Criar ou verificar configuração Siege
-create_siegerc
 
-# Executar os testes
-run_tests "$TEST_TYPE"
+# --- Main Logic ---
+case "$TEST_TYPE" in
+    put)
+        run_put_test
+        ;;
+    get)
+        run_get_test
+        ;;
+    delete)
+        run_delete_test
+        ;;
+    all)
+        run_put_test
+        echo -e "\n---\n"
+        run_get_test
+        echo -e "\n---\n"
+        run_delete_test
+        ;;
+esac
 
-# Limpar arquivos temporários
-echo -e "\n🧹 Limpando arquivos temporários..."
-rm -rf "$TEMP_DIR"
+cleanup
 
 echo -e "\n🏁 Testes de carga concluídos!"
-echo -e "\n💡 Esta versão força o uso do método PUT usando curl internamente."
-echo "Se quiser verificar o funcionamento, olhe o script auxiliar gerado em: $TEMP_DIR/siege_put.sh"
-echo "e verifique se as mensagens estão aparecendo no RabbitMQ." 
+echo -e "\n💡 DICAS DE PERFORMANCE E ANÁLISE:"
+echo "   - Se a 'transaction_rate' (taxa de transações) não aumenta significativamente ao adicionar mais usuários"
+echo "     ou ao aumentar a duração do teste, o gargalo provavelmente está no seu servidor (API, banco de dados, etc.)."
+echo "   - MONITORE OS RECURSOS DO SERVIDOR (CPU, Memória, I/O de disco, Rede) durante a execução dos testes."
+echo "     Ferramentas como 'htop', 'vmstat', 'iostat', 'netstat' no servidor podem ajudar a identificar o gargalo."
+echo "   - O 'response_time' (tempo de resposta) reportado pelo Siege é um indicador crucial. Um tempo de resposta alto"
+echo "     sob carga limita diretamente a taxa de transações (Taxa de Transações ≈ Concorrência / Tempo de Resposta)."
+echo "   - Para este teste, foram gerados no máximo $NUM_KEYS_FOR_FILE_GENERATION URLs/arquivos de dados únicos para o Siege."
+echo "     O Siege reutiliza esses URLs se o teste for longo ou a taxa de processamento do servidor for alta."
+echo "   - Os resultados detalhados do Siege (se o logging foi habilitado no comando) estão em arquivos dentro de '$TEMP_DIR/'."
+echo "   - O script auxiliar para testes manuais de PUT com curl (se gerado) está em: $TEMP_DIR/manual_put_request.sh"
+echo "   - Verifique se as mensagens estão sendo processadas corretamente pelo seu backend (ex: RabbitMQ), se aplicável."
